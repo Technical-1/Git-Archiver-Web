@@ -15,6 +15,10 @@ const App = {
     // DOM elements cache
     elements: {},
 
+    // Auto-refresh interval (30 seconds)
+    QUEUE_REFRESH_INTERVAL: 30000,
+    refreshTimer: null,
+
     /**
      * Initialize the application
      */
@@ -22,6 +26,33 @@ const App = {
         this.cacheElements();
         this.bindEvents();
         await this.loadData();
+        this.startAutoRefresh();
+    },
+
+    /**
+     * Start auto-refresh timer for queue
+     */
+    startAutoRefresh() {
+        this.refreshTimer = setInterval(() => this.refreshQueue(), this.QUEUE_REFRESH_INTERVAL);
+    },
+
+    /**
+     * Refresh queue data
+     */
+    async refreshQueue() {
+        try {
+            const btn = this.elements.queueRefreshBtn;
+            if (btn) btn.classList.add('spinning');
+
+            this.state.pendingRequests = await API.fetchPendingRequests();
+            this.renderQueue();
+            this.updateStats();
+        } catch (error) {
+            console.error('Failed to refresh queue:', error);
+        } finally {
+            const btn = this.elements.queueRefreshBtn;
+            if (btn) btn.classList.remove('spinning');
+        }
     },
 
     /**
@@ -53,6 +84,7 @@ const App = {
             // Queue
             queueSection: document.getElementById('queue-section'),
             queueList: document.getElementById('queue-list'),
+            queueRefreshBtn: document.getElementById('queue-refresh-btn'),
 
             // Modal
             modal: document.getElementById('repo-modal'),
@@ -84,6 +116,11 @@ const App = {
 
         // Retry button
         this.elements.retryBtn.addEventListener('click', () => this.loadData());
+
+        // Queue refresh button
+        if (this.elements.queueRefreshBtn) {
+            this.elements.queueRefreshBtn.addEventListener('click', () => this.refreshQueue());
+        }
 
         // Modal close
         this.elements.modalClose.addEventListener('click', () => this.closeModal());
