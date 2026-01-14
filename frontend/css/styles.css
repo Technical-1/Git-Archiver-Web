@@ -495,6 +495,22 @@ button {
     font-size: 0.8rem;
 }
 
+.footer-logo {
+    display: inline-block;
+    margin-top: 1rem;
+    opacity: 0.6;
+    transition: opacity var(--transition);
+}
+
+.footer-logo:hover {
+    opacity: 1;
+}
+
+.footer-logo img {
+    display: block;
+    filter: invert(1);
+}
+
 /* Modal */
 .modal {
     position: fixed;
