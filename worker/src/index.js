@@ -40,11 +40,16 @@ export default {
             return jsonResponse({ status: 'ok', timestamp: new Date().toISOString() });
         }
 
+        if (request.method === 'GET' && url.pathname === '/index') {
+            return handleIndexFetch(env);
+        }
+
         if (request.method === 'GET' && url.pathname === '/') {
             return jsonResponse({
                 service: 'Git-Archiver Web API',
                 endpoints: {
                     'POST /submit': 'Submit a repository URL for archiving',
+                    'GET /index': 'Fetch the master index of archived repositories',
                     'GET /health': 'Health check'
                 }
             });
@@ -53,6 +58,57 @@ export default {
         return errorResponse(404, 'Not found');
     }
 };
+
+/**
+ * Fetch and proxy the index.json from GitHub releases
+ * This avoids CORS issues with GitHub's release asset redirects
+ */
+async function handleIndexFetch(env) {
+    try {
+        // First, get the release info
+        const releaseUrl = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/tags/index`;
+        const releaseResponse = await fetch(releaseUrl, {
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'Git-Archiver-Worker/1.0'
+            }
+        });
+
+        if (!releaseResponse.ok) {
+            if (releaseResponse.status === 404) {
+                return jsonResponse({ repositories: {}, total_repos: 0, total_size_mb: 0 });
+            }
+            throw new Error(`Failed to fetch release: ${releaseResponse.status}`);
+        }
+
+        const release = await releaseResponse.json();
+
+        // Find the index.json asset
+        const indexAsset = release.assets?.find(a => a.name === 'index.json');
+        if (!indexAsset) {
+            return jsonResponse({ repositories: {}, total_repos: 0, total_size_mb: 0 });
+        }
+
+        // Fetch the asset content (server-side, no CORS issues)
+        const assetResponse = await fetch(indexAsset.url, {
+            headers: {
+                'Accept': 'application/octet-stream',
+                'User-Agent': 'Git-Archiver-Worker/1.0'
+            }
+        });
+
+        if (!assetResponse.ok) {
+            throw new Error(`Failed to fetch index asset: ${assetResponse.status}`);
+        }
+
+        const indexData = await assetResponse.json();
+        return jsonResponse(indexData);
+
+    } catch (error) {
+        console.error('Index fetch error:', error);
+        return errorResponse(500, 'Failed to fetch index');
+    }
+}
 
 /**
  * Handle repository submission
