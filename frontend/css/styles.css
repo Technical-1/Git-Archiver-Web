@@ -495,20 +495,31 @@ button {
     font-size: 0.8rem;
 }
 
-.footer-logo {
-    display: inline-block;
+.footer-credit {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
     margin-top: 1rem;
+    text-decoration: none;
     opacity: 0.6;
     transition: opacity var(--transition);
 }
 
-.footer-logo:hover {
+.footer-credit:hover {
     opacity: 1;
+    text-decoration: none;
 }
 
-.footer-logo img {
+.footer-credit img {
     display: block;
     filter: invert(1);
+}
+
+.footer-credit span {
+    font-style: italic;
+    font-size: 1rem;
+    color: var(--color-text-muted);
+    letter-spacing: 0.02em;
 }
 
 /* Modal */
