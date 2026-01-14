@@ -10,6 +10,11 @@ on:
         required: true
         type: string
 
+# Permissions needed for creating releases and commenting on issues
+permissions:
+  contents: write
+  issues: write
+
 # Ensure only one archive job runs at a time
 concurrency:
   group: archive-${{ github.event.issue.number || github.run_id }}
