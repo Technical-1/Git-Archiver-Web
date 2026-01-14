@@ -58,21 +58,39 @@ jobs:
 
       - name: Update repositories
         if: steps.select.outputs.count > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           while IFS= read -r REPO_URL; do
             echo "========================================"
-            echo "Updating: $REPO_URL"
+            echo "Checking: $REPO_URL"
             echo "========================================"
 
-            # Trigger the archive workflow
-            curl -X POST \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/archive.yml/dispatches" \
-              -d "{\"ref\":\"main\",\"inputs\":{\"url\":\"$REPO_URL\"}}"
+            # Extract owner/repo from URL
+            REPO_PATH=$(echo "$REPO_URL" | sed 's|https://github.com/||')
+
+            # Check if there's already an open issue for this repo
+            EXISTING=$(gh issue list --label "archive-request" --state open --search "$REPO_PATH" --json number --jq '.[0].number // empty')
+
+            if [ -n "$EXISTING" ]; then
+              echo "Skipping - already has open issue #$EXISTING"
+            else
+              # Create issue to trigger archive workflow
+              echo "Creating archive request issue..."
+              gh issue create \
+                --title "Archive Request: $REPO_PATH" \
+                --body "---
+url: $REPO_URL
+requested_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+source: daily-update
+---
+
+Automated daily update check for \`$REPO_PATH\`" \
+                --label "archive-request"
+            fi
 
             # Wait between requests to avoid rate limiting
-            sleep 30
+            sleep 10
 
           done < repos_to_update.txt
 
