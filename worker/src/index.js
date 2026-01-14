@@ -60,7 +60,7 @@ export default {
             if (!owner || !repo) {
                 return errorResponse(400, 'Missing owner or repo parameter');
             }
-            return handleStatusCheck(owner, repo);
+            return handleStatusCheck(owner, repo, env);
         }
 
         if (request.method === 'POST' && url.pathname === '/bulk-submit') {
@@ -168,7 +168,7 @@ async function handleSubmit(request, env) {
         }
 
         // Check if repository exists
-        const repoCheck = await checkRepository(owner, repo);
+        const repoCheck = await checkRepository(owner, repo, env);
         if (!repoCheck.exists) {
             return errorResponse(404, 'Repository not found on GitHub');
         }
@@ -259,13 +259,20 @@ async function checkRateLimit(ip, env) {
 /**
  * Check if repository exists on GitHub
  */
-async function checkRepository(owner, repo) {
+async function checkRepository(owner, repo, env) {
     try {
+        const headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Git-Archiver-Worker/1.0'
+        };
+
+        // Use auth if available to avoid rate limits
+        if (env?.GITHUB_TOKEN) {
+            headers['Authorization'] = `token ${env.GITHUB_TOKEN}`;
+        }
+
         const response = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-            headers: {
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'Git-Archiver-Worker/1.0'
-            }
+            headers
         });
 
         if (response.status === 404) {
@@ -522,13 +529,20 @@ async function handleReadmeFetch(owner, repo, tag, env) {
 /**
  * Check if original repository is still online
  */
-async function handleStatusCheck(owner, repo) {
+async function handleStatusCheck(owner, repo, env) {
     try {
+        const headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Git-Archiver-Worker/1.0'
+        };
+
+        // Use auth if available to avoid rate limits
+        if (env?.GITHUB_TOKEN) {
+            headers['Authorization'] = `token ${env.GITHUB_TOKEN}`;
+        }
+
         const response = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
-            headers: {
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'Git-Archiver-Worker/1.0'
-            }
+            headers
         });
 
         if (response.status === 404) {
@@ -615,7 +629,7 @@ async function handleBulkSubmit(request, env) {
 
             try {
                 // Check if repository exists
-                const repoCheck = await checkRepository(owner, repo);
+                const repoCheck = await checkRepository(owner, repo, env);
                 if (!repoCheck.exists) {
                     results.push({ url: repoUrl, success: false, error: 'Repository not found' });
                     continue;
