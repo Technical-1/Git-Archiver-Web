@@ -170,6 +170,11 @@ button {
     justify-content: center;
 }
 
+/* Ensure hidden attribute always works */
+[hidden] {
+    display: none !important;
+}
+
 .form-message {
     margin-top: 1rem;
     padding: 0.75rem 1rem;
