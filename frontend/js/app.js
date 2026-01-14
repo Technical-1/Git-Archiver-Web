@@ -417,14 +417,17 @@ const App = {
             </div>
             <div class="loading-state">
                 <span class="spinner large"></span>
-                <p>Loading versions...</p>
+                <p>Loading...</p>
             </div>
         `;
 
-        // Fetch versions
-        const versions = await API.fetchRepoVersions(repo.owner, repo.repo);
+        // Fetch versions and README in parallel
+        const [versions, readme] = await Promise.all([
+            API.fetchRepoVersions(repo.owner, repo.repo),
+            API.fetchReadme(repo.owner, repo.repo)
+        ]);
 
-        // Render modal content
+        // Render modal content with tabs
         this.elements.modalBody.innerHTML = `
             <div class="modal-header">
                 <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
@@ -434,24 +437,56 @@ const App = {
                 </p>
             </div>
 
-            <div class="modal-section">
-                <h4>Archived Versions (${versions.length})</h4>
+            <div class="modal-tabs">
+                <button class="tab-btn active" data-tab="versions">Versions (${versions.length})</button>
+                <button class="tab-btn" data-tab="readme">README</button>
+            </div>
+
+            <div class="tab-content" id="tab-versions">
                 <div class="version-list">
-                    ${versions.length > 0 ? versions.map(version => this.renderVersion(version)).join('') : '<p>No versions found</p>'}
+                    ${versions.length > 0 ? versions.map(version => this.renderVersion(version, repo)).join('') : '<p class="empty-message">No versions found</p>'}
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-readme" hidden>
+                <div class="readme-content">
+                    ${readme ? Utils.renderMarkdown(readme) : '<p class="empty-message">No README available</p>'}
                 </div>
             </div>
         `;
+
+        // Bind tab events
+        this.elements.modalBody.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+        });
+    },
+
+    /**
+     * Switch modal tab
+     */
+    switchTab(tabId) {
+        // Update button states
+        this.elements.modalBody.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tabId);
+        });
+
+        // Update content visibility
+        this.elements.modalBody.querySelectorAll('.tab-content').forEach(content => {
+            content.hidden = content.id !== `tab-${tabId}`;
+        });
     },
 
     /**
      * Render a version item
      */
-    renderVersion(version) {
-        const archive = version.assets.find(a => a.name === 'archive.tar.gz');
+    renderVersion(version, repo) {
+        // Find archive (support both old "archive.tar.gz" and new "{owner}_{repo}.tar.gz" naming)
+        const archive = version.assets.find(a => a.name.endsWith('.tar.gz'));
         const metadata = version.assets.find(a => a.name === 'metadata.json');
 
         const parsed = Utils.parseReleaseTag(version.tag);
         const date = parsed?.date || version.date;
+        const archiveName = repo ? `${repo.owner}_${repo.repo}.tar.gz` : (archive?.name || 'archive.tar.gz');
 
         return `
             <div class="version-item">
@@ -459,7 +494,7 @@ const App = {
                     <span class="version-date">${Utils.formatDate(date)}</span>
                     <span class="version-meta">${archive ? Utils.formatBytes(archive.size) : 'Unknown size'}</span>
                 </div>
-                ${archive ? `<a href="${archive.download_url}" class="version-download" download>Download</a>` : ''}
+                ${archive ? `<a href="${archive.download_url}" class="version-download" download="${archiveName}">Download</a>` : ''}
             </div>
         `;
     },
