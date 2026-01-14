@@ -301,7 +301,7 @@ jobs:
           OWNER="${{ steps.parse.outputs.owner }}"
           REPO="${{ steps.parse.outputs.repo }}"
           TAG="${{ steps.parse.outputs.tag }}"
-          SIZE_MB="${{ steps.validate.outputs.archive_size_mb }}"
+          SIZE_MB="${{ steps.archive.outputs.archive_size_mb }}"
           DESCRIPTION="${{ steps.validate.outputs.description }}"
           STATUS="${{ steps.validate.outputs.is_archived == 'true' && 'archived' || 'active' }}"
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
