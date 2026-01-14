@@ -9,8 +9,8 @@ const API = {
         GITHUB_OWNER: 'Technical-1',
         // Your repository name
         GITHUB_REPO: 'Git-Archiver-Web',
-        // Cloudflare Worker URL (update after deployment)
-        WORKER_URL: 'https://git-archiver.YOUR_SUBDOMAIN.workers.dev',
+        // Cloudflare Worker URL
+        WORKER_URL: 'https://git-archiver.btc-treasuries.workers.dev',
         // GitHub API base
         GITHUB_API: 'https://api.github.com'
     },
