@@ -77,15 +77,11 @@ jobs:
             else
               # Create issue to trigger archive workflow
               echo "Creating archive request issue..."
+              TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              printf '%s\n' "---" "url: $REPO_URL" "requested_at: $TIMESTAMP" "source: daily-update" "---" "" "Automated daily update check for \`$REPO_PATH\`" > /tmp/issue_body.txt
               gh issue create \
                 --title "Archive Request: $REPO_PATH" \
-                --body "---
-url: $REPO_URL
-requested_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-source: daily-update
----
-
-Automated daily update check for \`$REPO_PATH\`" \
+                --body-file /tmp/issue_body.txt \
                 --label "archive-request"
             fi
 
