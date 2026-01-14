@@ -65,14 +65,16 @@ export default {
  */
 async function handleIndexFetch(env) {
     try {
+        // Common headers for GitHub API (with auth to avoid rate limits)
+        const githubHeaders = {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Git-Archiver-Worker/1.0',
+            'Authorization': `token ${env.GITHUB_TOKEN}`
+        };
+
         // First, get the release info
         const releaseUrl = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/tags/index`;
-        const releaseResponse = await fetch(releaseUrl, {
-            headers: {
-                'Accept': 'application/vnd.github.v3+json',
-                'User-Agent': 'Git-Archiver-Worker/1.0'
-            }
-        });
+        const releaseResponse = await fetch(releaseUrl, { headers: githubHeaders });
 
         if (!releaseResponse.ok) {
             if (releaseResponse.status === 404) {
@@ -89,11 +91,12 @@ async function handleIndexFetch(env) {
             return jsonResponse({ repositories: {}, total_repos: 0, total_size_mb: 0 });
         }
 
-        // Fetch the asset content (server-side, no CORS issues)
+        // Fetch the asset content (with auth)
         const assetResponse = await fetch(indexAsset.url, {
             headers: {
                 'Accept': 'application/octet-stream',
-                'User-Agent': 'Git-Archiver-Worker/1.0'
+                'User-Agent': 'Git-Archiver-Worker/1.0',
+                'Authorization': `token ${env.GITHUB_TOKEN}`
             }
         });
 
