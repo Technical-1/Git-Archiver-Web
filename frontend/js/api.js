@@ -106,6 +106,42 @@ const API = {
     },
 
     /**
+     * Fetch README content from a release
+     * @param {string} owner - Repo owner
+     * @param {string} repo - Repo name
+     * @param {string} tag - Release tag (optional, uses latest if not provided)
+     * @returns {Promise<string>}
+     */
+    async fetchReadme(owner, repo, tag = null) {
+        try {
+            // If no tag, get the latest release for this repo
+            if (!tag) {
+                const versions = await this.fetchRepoVersions(owner, repo);
+                if (versions.length === 0) return null;
+                tag = versions[0].tag;
+            }
+
+            // Find README asset
+            const releaseUrl = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases/tags/${tag}`;
+            const response = await fetch(releaseUrl);
+            if (!response.ok) return null;
+
+            const release = await response.json();
+            const readmeAsset = release.assets?.find(a => a.name.toLowerCase() === 'readme.md');
+            if (!readmeAsset) return null;
+
+            // Fetch README content via download URL
+            const readmeResponse = await fetch(readmeAsset.browser_download_url);
+            if (!readmeResponse.ok) return null;
+
+            return await readmeResponse.text();
+        } catch (error) {
+            console.error('Error fetching README:', error);
+            return null;
+        }
+    },
+
+    /**
      * Submit a new repository URL for archiving
      * @param {string} url - GitHub repository URL
      * @returns {Promise<Object>}

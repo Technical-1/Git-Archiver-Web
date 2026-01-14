@@ -148,19 +148,48 @@ jobs:
 
       - name: Create archive
         if: steps.validate.outputs.valid == 'true'
+        id: archive
         run: |
-          echo "Creating archive..."
+          OWNER="${{ steps.parse.outputs.owner }}"
+          REPO="${{ steps.parse.outputs.repo }}"
+          ARCHIVE_NAME="${OWNER}_${REPO}.tar.gz"
 
-          # Create tar.gz archive
-          tar -czf archive.tar.gz -C repo .
+          echo "Creating archive: $ARCHIVE_NAME"
+
+          # Create tar.gz archive with repo name
+          tar -czf "$ARCHIVE_NAME" -C repo .
 
           # Get archive size
-          ARCHIVE_SIZE=$(stat -f%z archive.tar.gz 2>/dev/null || stat -c%s archive.tar.gz)
+          ARCHIVE_SIZE=$(stat -f%z "$ARCHIVE_NAME" 2>/dev/null || stat -c%s "$ARCHIVE_NAME")
           ARCHIVE_SIZE_MB=$((ARCHIVE_SIZE / 1024 / 1024))
           echo "Archive size: ${ARCHIVE_SIZE_MB}MB"
 
+          # Calculate archive hash for deduplication
+          ARCHIVE_HASH=$(sha256sum "$ARCHIVE_NAME" | cut -d' ' -f1)
+          echo "Archive hash: $ARCHIVE_HASH"
+
+          echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
           echo "archive_size=$ARCHIVE_SIZE" >> $GITHUB_OUTPUT
           echo "archive_size_mb=$ARCHIVE_SIZE_MB" >> $GITHUB_OUTPUT
+          echo "archive_hash=$ARCHIVE_HASH" >> $GITHUB_OUTPUT
+
+      - name: Extract README
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          # Find and copy README file
+          cd repo
+          README_FILE=$(find . -maxdepth 1 -iname 'readme*' -type f | head -1)
+          if [ -n "$README_FILE" ]; then
+            cp "$README_FILE" ../README.md
+            echo "Found README: $README_FILE"
+          else
+            echo "# ${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }}" > ../README.md
+            echo "" >> ../README.md
+            echo "${{ steps.validate.outputs.description }}" >> ../README.md
+            echo "" >> ../README.md
+            echo "*No README found in repository*" >> ../README.md
+          fi
+          cd ..
 
       - name: Create metadata
         if: steps.validate.outputs.valid == 'true'
@@ -173,17 +202,68 @@ jobs:
             "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "commit_hash": "${{ steps.validate.outputs.commit_hash }}",
             "description": "${{ steps.validate.outputs.description }}",
-            "size_bytes": ${{ steps.validate.outputs.archive_size || 0 }},
+            "size_bytes": ${{ steps.archive.outputs.archive_size || 0 }},
             "original_size_mb": ${{ steps.validate.outputs.size_mb || 0 }},
             "stars": ${{ steps.validate.outputs.stars || 0 }},
-            "is_archived": ${{ steps.validate.outputs.is_archived || false }}
+            "is_archived": ${{ steps.validate.outputs.is_archived || false }},
+            "archive_hash": "${{ steps.archive.outputs.archive_hash }}",
+            "archive_name": "${{ steps.archive.outputs.archive_name }}"
           }
           EOF
 
           cat metadata.json
 
-      - name: Create GitHub Release
+      - name: Check for changes from previous archive
         if: steps.validate.outputs.valid == 'true'
+        id: check_changes
+        run: |
+          OWNER="${{ steps.parse.outputs.owner }}"
+          REPO="${{ steps.parse.outputs.repo }}"
+          NEW_HASH="${{ steps.archive.outputs.archive_hash }}"
+
+          echo "New archive hash: $NEW_HASH"
+
+          # Get all releases for this repo
+          RELEASES=$(curl -s \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100")
+
+          # Find the most recent release for this owner/repo
+          PREV_TAG=$(echo "$RELEASES" | jq -r --arg prefix "${OWNER}__${REPO}__" '
+            [.[] | select(.tag_name | startswith($prefix))] | sort_by(.published_at) | last | .tag_name // empty
+          ')
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous release found - will create new release"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Previous release tag: $PREV_TAG"
+
+          # Get previous metadata to compare hash
+          PREV_METADATA_URL="https://github.com/${{ github.repository }}/releases/download/$PREV_TAG/metadata.json"
+          PREV_HASH=$(curl -sL "$PREV_METADATA_URL" | jq -r '.archive_hash // empty')
+
+          if [ -z "$PREV_HASH" ]; then
+            echo "No previous hash found - will create new release"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Previous archive hash: $PREV_HASH"
+
+          if [ "$NEW_HASH" == "$PREV_HASH" ]; then
+            echo "Archive hash unchanged - skipping release"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Archive hash changed - will create new release"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.parse.outputs.tag }}
@@ -192,18 +272,20 @@ jobs:
             Archive of [${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }}](https://github.com/${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }})
 
             - **Archived**: ${{ steps.parse.outputs.date }}
-            - **Size**: ${{ steps.validate.outputs.archive_size_mb }}MB
+            - **Size**: ${{ steps.archive.outputs.archive_size_mb }}MB
             - **Stars**: ${{ steps.validate.outputs.stars }}
+            - **Hash**: `${{ steps.archive.outputs.archive_hash }}`
 
             ${{ steps.validate.outputs.description }}
           files: |
-            archive.tar.gz
+            ${{ steps.archive.outputs.archive_name }}
             metadata.json
+            README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update index
-        if: steps.validate.outputs.valid == 'true'
+        if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
         run: |
           # Download existing index or create new one
           INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
@@ -271,7 +353,7 @@ jobs:
           cat index.json
 
       - name: Upload index
-        if: steps.validate.outputs.valid == 'true'
+        if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: index
@@ -281,17 +363,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Comment on issue (success)
-        if: github.event_name == 'issues' && steps.validate.outputs.valid == 'true'
+      - name: Comment on issue (success - new archive)
+        if: github.event_name == 'issues' && steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const tag = '${{ steps.parse.outputs.tag }}';
             const owner = '${{ steps.parse.outputs.owner }}';
             const repo = '${{ steps.parse.outputs.repo }}';
-            const sizeMB = '${{ steps.validate.outputs.archive_size_mb }}';
+            const sizeMB = '${{ steps.archive.outputs.archive_size_mb }}';
+            const archiveName = '${{ steps.archive.outputs.archive_name }}';
 
-            const downloadUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/archive.tar.gz`;
+            const downloadUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/${archiveName}`;
 
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -301,7 +384,7 @@ jobs:
 
             **Repository:** ${owner}/${repo}
             **Size:** ${sizeMB}MB
-            **Download:** [archive.tar.gz](${downloadUrl})
+            **Download:** [${archiveName}](${downloadUrl})
 
             This issue will now be closed.`
             });
@@ -312,6 +395,35 @@ jobs:
               repo: context.repo.repo,
               state: 'closed',
               labels: ['archive-request', 'completed']
+            });
+
+      - name: Comment on issue (no changes)
+        if: github.event_name == 'issues' && steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = '${{ steps.parse.outputs.owner }}';
+            const repo = '${{ steps.parse.outputs.repo }}';
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `ℹ️ **No changes detected**
+
+            The repository **${owner}/${repo}** has not changed since the last archive.
+
+            No new release was created. You can download the existing archive from the releases page.
+
+            This issue will now be closed.`
+            });
+
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              labels: ['archive-request', 'no-changes']
             });
 
       - name: Comment on issue (failure)

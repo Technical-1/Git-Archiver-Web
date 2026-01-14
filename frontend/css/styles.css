@@ -559,6 +559,102 @@ button {
     font-size: 0.9rem;
 }
 
+/* Modal Tabs */
+.modal-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 0.5rem;
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    color: var(--color-text-muted);
+    font-size: 0.9rem;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    border-radius: var(--radius);
+    transition: all var(--transition);
+}
+
+.tab-btn:hover {
+    color: var(--color-text);
+    background: var(--color-bg-tertiary);
+}
+
+.tab-btn.active {
+    color: var(--color-primary);
+    background: rgba(88, 166, 255, 0.1);
+}
+
+.tab-content {
+    min-height: 200px;
+}
+
+/* README Content */
+.readme-content {
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--color-text);
+}
+
+.readme-content h1,
+.readme-content h2,
+.readme-content h3 {
+    color: var(--color-text-bright);
+    margin: 1.5rem 0 0.75rem;
+}
+
+.readme-content h1 { font-size: 1.5rem; }
+.readme-content h2 { font-size: 1.25rem; }
+.readme-content h3 { font-size: 1.1rem; }
+
+.readme-content p {
+    margin-bottom: 1rem;
+}
+
+.readme-content code {
+    background: var(--color-bg-tertiary);
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.85em;
+}
+
+.readme-content pre {
+    background: var(--color-bg-tertiary);
+    padding: 1rem;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin: 1rem 0;
+}
+
+.readme-content pre code {
+    background: none;
+    padding: 0;
+}
+
+.readme-content ul {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+.readme-content li {
+    margin-bottom: 0.5rem;
+}
+
+.readme-content a {
+    color: var(--color-primary);
+}
+
+.empty-message {
+    color: var(--color-text-muted);
+    text-align: center;
+    padding: 2rem;
+}
+
 .modal-section {
     margin-bottom: 1.5rem;
 }
