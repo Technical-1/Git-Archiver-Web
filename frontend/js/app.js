@@ -363,6 +363,12 @@ const App = {
      * Open repository detail modal
      */
     async openRepoModal(repo) {
+        // Guard: don't open modal without valid repo data
+        if (!repo || !repo.owner || !repo.repo) {
+            console.error('Cannot open modal: invalid repo data', repo);
+            return;
+        }
+
         Utils.show(this.elements.modal);
         document.body.style.overflow = 'hidden';
 
