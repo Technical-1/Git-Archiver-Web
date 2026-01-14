@@ -12,6 +12,10 @@ on:
         default: '10'
         type: string
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   update:
     runs-on: ubuntu-latest
