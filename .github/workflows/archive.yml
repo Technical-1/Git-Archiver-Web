@@ -350,6 +350,12 @@ jobs:
           fi
 
           mv index_new.json index.json
+
+          # Recalculate total_size_mb from all repositories
+          TOTAL_SIZE=$(jq '[.repositories[].latest_size_mb] | add // 0' index.json)
+          jq --argjson total "$TOTAL_SIZE" '.total_size_mb = $total' index.json > index_final.json
+          mv index_final.json index.json
+
           cat index.json
 
       - name: Upload index
