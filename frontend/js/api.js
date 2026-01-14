@@ -17,42 +17,18 @@ const API = {
 
     /**
      * Fetch the master index of all archived repositories
+     * Uses the worker to proxy the request and avoid CORS issues
      * @returns {Promise<Object>}
      */
     async fetchIndex() {
         try {
-            // Use GitHub API to get the release asset (supports CORS)
-            const releaseUrl = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases/tags/index`;
-            const releaseResponse = await fetch(releaseUrl);
+            const response = await fetch(`${this.config.WORKER_URL}/index`);
 
-            if (!releaseResponse.ok) {
-                // Index doesn't exist yet, return empty
-                if (releaseResponse.status === 404) {
-                    return { repositories: {}, total_repos: 0, total_size_mb: 0 };
-                }
-                throw new Error(`Failed to fetch release: ${releaseResponse.status}`);
+            if (!response.ok) {
+                throw new Error(`Failed to fetch index: ${response.status}`);
             }
 
-            const release = await releaseResponse.json();
-
-            // Find the index.json asset
-            const indexAsset = release.assets?.find(a => a.name === 'index.json');
-            if (!indexAsset) {
-                return { repositories: {}, total_repos: 0, total_size_mb: 0 };
-            }
-
-            // Fetch the asset content via API (supports CORS)
-            const assetResponse = await fetch(indexAsset.url, {
-                headers: {
-                    'Accept': 'application/octet-stream'
-                }
-            });
-
-            if (!assetResponse.ok) {
-                throw new Error(`Failed to fetch index asset: ${assetResponse.status}`);
-            }
-
-            return await assetResponse.json();
+            return await response.json();
         } catch (error) {
             console.error('Error fetching index:', error);
             throw error;
