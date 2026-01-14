@@ -21,19 +21,38 @@ const API = {
      */
     async fetchIndex() {
         try {
-            // Try to fetch from releases (CDN cached)
-            const url = `https://github.com/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases/download/index/index.json`;
-            const response = await fetch(url);
+            // Use GitHub API to get the release asset (supports CORS)
+            const releaseUrl = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases/tags/index`;
+            const releaseResponse = await fetch(releaseUrl);
 
-            if (!response.ok) {
+            if (!releaseResponse.ok) {
                 // Index doesn't exist yet, return empty
-                if (response.status === 404) {
+                if (releaseResponse.status === 404) {
                     return { repositories: {}, total_repos: 0, total_size_mb: 0 };
                 }
-                throw new Error(`Failed to fetch index: ${response.status}`);
+                throw new Error(`Failed to fetch release: ${releaseResponse.status}`);
             }
 
-            return await response.json();
+            const release = await releaseResponse.json();
+
+            // Find the index.json asset
+            const indexAsset = release.assets?.find(a => a.name === 'index.json');
+            if (!indexAsset) {
+                return { repositories: {}, total_repos: 0, total_size_mb: 0 };
+            }
+
+            // Fetch the asset content via API (supports CORS)
+            const assetResponse = await fetch(indexAsset.url, {
+                headers: {
+                    'Accept': 'application/octet-stream'
+                }
+            });
+
+            if (!assetResponse.ok) {
+                throw new Error(`Failed to fetch index asset: ${assetResponse.status}`);
+            }
+
+            return await assetResponse.json();
         } catch (error) {
             console.error('Error fetching index:', error);
             throw error;
