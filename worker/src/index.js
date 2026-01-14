@@ -157,6 +157,18 @@ async function handleSubmit(request, env) {
             return errorResponse(400, `Repository too large (${formatBytes(repoCheck.size)}). Maximum size is 2GB.`);
         }
 
+        // Check for existing pending request (open issue)
+        const existingIssue = await checkExistingRequest(owner, repo, env);
+        if (existingIssue) {
+            return errorResponse(409, `This repository is already queued (Issue #${existingIssue.number})`);
+        }
+
+        // Check if already archived today
+        const todayRelease = await checkTodayRelease(owner, repo, env);
+        if (todayRelease) {
+            return errorResponse(409, `This repository was already archived today. Download: ${todayRelease.url}`);
+        }
+
         // Create GitHub issue
         const issue = await createGitHubIssue(owner, repo, repoUrl, env);
 
@@ -251,6 +263,70 @@ async function checkRepository(owner, repo) {
         console.error('Repository check error:', error);
         // Fail open - let the action try anyway
         return { exists: true, private: false, size: 0 };
+    }
+}
+
+/**
+ * Check for existing open issue for this repository
+ */
+async function checkExistingRequest(owner, repo, env) {
+    try {
+        const response = await fetch(
+            `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/issues?labels=archive-request&state=open&per_page=100`,
+            {
+                headers: {
+                    'Accept': 'application/vnd.github.v3+json',
+                    'Authorization': `token ${env.GITHUB_TOKEN}`,
+                    'User-Agent': 'Git-Archiver-Worker/1.0'
+                }
+            }
+        );
+
+        if (!response.ok) return null;
+
+        const issues = await response.json();
+        const searchPattern = `${owner}/${repo}`.toLowerCase();
+
+        return issues.find(issue =>
+            issue.title.toLowerCase().includes(searchPattern) ||
+            issue.body?.toLowerCase().includes(searchPattern)
+        );
+    } catch (error) {
+        console.error('Check existing request error:', error);
+        return null; // Fail open
+    }
+}
+
+/**
+ * Check if repository was already archived today
+ */
+async function checkTodayRelease(owner, repo, env) {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const tag = `${owner}__${repo}__${today}`;
+
+        const response = await fetch(
+            `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/tags/${tag}`,
+            {
+                headers: {
+                    'Accept': 'application/vnd.github.v3+json',
+                    'Authorization': `token ${env.GITHUB_TOKEN}`,
+                    'User-Agent': 'Git-Archiver-Worker/1.0'
+                }
+            }
+        );
+
+        if (response.status === 404) return null;
+        if (!response.ok) return null;
+
+        const release = await response.json();
+        return {
+            tag: release.tag_name,
+            url: release.html_url
+        };
+    } catch (error) {
+        console.error('Check today release error:', error);
+        return null; // Fail open
     }
 }
 
