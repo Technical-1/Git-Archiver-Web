@@ -90,7 +90,18 @@ const App = {
             modal: document.getElementById('repo-modal'),
             modalBody: document.getElementById('modal-body'),
             modalClose: document.querySelector('.modal-close'),
-            modalBackdrop: document.querySelector('.modal-backdrop')
+            modalBackdrop: document.querySelector('.modal-backdrop'),
+
+            // Bulk Upload
+            bulkUploadBtn: document.getElementById('bulk-upload-btn'),
+            bulkModal: document.getElementById('bulk-modal'),
+            bulkUrls: document.getElementById('bulk-urls'),
+            bulkMessage: document.getElementById('bulk-message'),
+            bulkSubmitBtn: document.getElementById('bulk-submit-btn'),
+            bulkCancelBtn: document.getElementById('bulk-cancel-btn'),
+            bulkResults: document.getElementById('bulk-results'),
+            bulkClose: document.querySelector('.bulk-close'),
+            bulkBackdrop: document.querySelector('.bulk-backdrop')
         };
     },
 
@@ -126,8 +137,18 @@ const App = {
         this.elements.modalClose.addEventListener('click', () => this.closeModal());
         this.elements.modalBackdrop.addEventListener('click', () => this.closeModal());
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') this.closeModal();
+            if (e.key === 'Escape') {
+                this.closeModal();
+                this.closeBulkModal();
+            }
         });
+
+        // Bulk upload modal
+        this.elements.bulkUploadBtn.addEventListener('click', () => this.openBulkModal());
+        this.elements.bulkClose.addEventListener('click', () => this.closeBulkModal());
+        this.elements.bulkBackdrop.addEventListener('click', () => this.closeBulkModal());
+        this.elements.bulkCancelBtn.addEventListener('click', () => this.closeBulkModal());
+        this.elements.bulkSubmitBtn.addEventListener('click', () => this.handleBulkSubmit());
     },
 
     /**
@@ -223,13 +244,20 @@ const App = {
 
         this.elements.reposList.innerHTML = repos.map(repo => this.renderRepoCard(repo)).join('');
 
-        // Bind click events to cards
+        // Bind click events to cards and check status
         this.elements.reposList.querySelectorAll('.repo-card').forEach(card => {
             card.addEventListener('click', () => {
                 const url = card.dataset.url;
                 const repo = repos.find(r => r.url === url);
                 if (repo) this.openRepoModal(repo);
             });
+
+            // Check source status (async, will update card when complete)
+            const owner = card.dataset.owner;
+            const repo = card.dataset.repo;
+            if (owner && repo) {
+                this.checkRepoSourceStatus(owner, repo, card);
+            }
         });
     },
 
@@ -243,10 +271,13 @@ const App = {
             : 'Active';
 
         return `
-            <div class="repo-card" data-url="${Utils.escapeHtml(repo.url)}">
+            <div class="repo-card" data-url="${Utils.escapeHtml(repo.url)}" data-owner="${Utils.escapeHtml(repo.owner)}" data-repo="${Utils.escapeHtml(repo.repo)}">
                 <div class="repo-card-header">
                     <span class="repo-name">${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</span>
-                    <span class="repo-status ${statusClass}">${statusLabel}</span>
+                    <div class="repo-status-group">
+                        <span class="repo-status ${statusClass}">${statusLabel}</span>
+                        <span class="repo-source-status checking"><span class="status-dot pulse"></span></span>
+                    </div>
                 </div>
                 ${repo.description ? `<p class="repo-description">${Utils.escapeHtml(repo.description)}</p>` : ''}
                 <div class="repo-meta">
@@ -505,6 +536,161 @@ const App = {
     closeModal() {
         Utils.hide(this.elements.modal);
         document.body.style.overflow = '';
+    },
+
+    /**
+     * Open bulk upload modal
+     */
+    openBulkModal() {
+        Utils.show(this.elements.bulkModal);
+        document.body.style.overflow = 'hidden';
+        this.elements.bulkUrls.value = '';
+        Utils.hide(this.elements.bulkMessage);
+        Utils.hide(this.elements.bulkResults);
+        this.elements.bulkUrls.focus();
+    },
+
+    /**
+     * Close bulk upload modal
+     */
+    closeBulkModal() {
+        Utils.hide(this.elements.bulkModal);
+        document.body.style.overflow = '';
+    },
+
+    /**
+     * Handle bulk upload submission
+     */
+    async handleBulkSubmit() {
+        const text = this.elements.bulkUrls.value.trim();
+
+        if (!text) {
+            this.showBulkMessage('Please enter at least one URL', 'error');
+            return;
+        }
+
+        // Parse URLs (one per line)
+        const urls = text.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0);
+
+        if (urls.length === 0) {
+            this.showBulkMessage('Please enter at least one URL', 'error');
+            return;
+        }
+
+        if (urls.length > 20) {
+            this.showBulkMessage('Maximum 20 URLs allowed per bulk submission', 'error');
+            return;
+        }
+
+        // Validate URLs
+        const invalidUrls = urls.filter(url => !Utils.isValidGitHubUrl(url));
+        if (invalidUrls.length > 0) {
+            this.showBulkMessage(`Invalid URL(s): ${invalidUrls.slice(0, 3).join(', ')}${invalidUrls.length > 3 ? '...' : ''}`, 'error');
+            return;
+        }
+
+        // Set loading state
+        this.setBulkLoading(true);
+        Utils.hide(this.elements.bulkMessage);
+        Utils.hide(this.elements.bulkResults);
+
+        try {
+            const result = await API.bulkSubmit(urls);
+
+            // Show results
+            this.showBulkResults(result);
+
+            // Refresh queue if any were successful
+            if (result.summary.successful > 0) {
+                this.state.pendingRequests = await API.fetchPendingRequests();
+                this.renderQueue();
+                this.updateStats();
+            }
+
+        } catch (error) {
+            this.showBulkMessage(error.message || 'Failed to submit. Please try again.', 'error');
+        } finally {
+            this.setBulkLoading(false);
+        }
+    },
+
+    /**
+     * Show bulk upload message
+     */
+    showBulkMessage(message, type) {
+        this.elements.bulkMessage.textContent = message;
+        this.elements.bulkMessage.className = `form-message ${type}`;
+        Utils.show(this.elements.bulkMessage);
+    },
+
+    /**
+     * Set bulk submit loading state
+     */
+    setBulkLoading(loading) {
+        this.elements.bulkSubmitBtn.disabled = loading;
+        const btnText = this.elements.bulkSubmitBtn.querySelector('.btn-text');
+        const btnLoading = this.elements.bulkSubmitBtn.querySelector('.btn-loading');
+
+        if (loading) {
+            Utils.hide(btnText);
+            Utils.show(btnLoading);
+        } else {
+            Utils.show(btnText);
+            Utils.hide(btnLoading);
+        }
+    },
+
+    /**
+     * Show bulk upload results
+     */
+    showBulkResults(result) {
+        Utils.show(this.elements.bulkResults);
+
+        const { summary, results } = result;
+
+        this.elements.bulkResults.innerHTML = `
+            <div class="bulk-summary">
+                <strong>${summary.successful}</strong> queued, <strong>${summary.failed}</strong> failed
+            </div>
+            ${results.map(r => `
+                <div class="bulk-result-item">
+                    <span class="bulk-result-icon">${r.success ? '✓' : '✗'}</span>
+                    <span class="bulk-result-url">${Utils.escapeHtml(Utils.parseGitHubUrl(r.url)?.owner || '')}/${Utils.escapeHtml(Utils.parseGitHubUrl(r.url)?.repo || r.url)}</span>
+                    <span class="bulk-result-status ${r.success ? 'success' : 'error'}">
+                        ${r.success ? `#${r.issue_number}` : Utils.escapeHtml(r.error)}
+                    </span>
+                </div>
+            `).join('')}
+        `;
+    },
+
+    /**
+     * Check and update source status for a repo card
+     */
+    async checkRepoSourceStatus(owner, repo, cardElement) {
+        const statusContainer = cardElement.querySelector('.repo-source-status');
+        if (!statusContainer) return;
+
+        try {
+            const status = await API.checkRepoStatus(owner, repo);
+
+            if (status.online === true) {
+                statusContainer.className = 'repo-source-status online';
+                statusContainer.innerHTML = '<span class="status-dot"></span>Online';
+            } else if (status.online === false) {
+                statusContainer.className = 'repo-source-status offline';
+                statusContainer.innerHTML = '<span class="status-dot"></span>Offline';
+            } else {
+                statusContainer.className = 'repo-source-status';
+                statusContainer.innerHTML = '';
+            }
+        } catch (error) {
+            console.error('Failed to check status:', error);
+            statusContainer.className = 'repo-source-status';
+            statusContainer.innerHTML = '';
+        }
     }
 };
 

@@ -50,6 +50,11 @@
                     <button class="example-btn" data-url="https://github.com/vuejs/vue">vuejs/vue</button>
                     <button class="example-btn" data-url="https://github.com/torvalds/linux">torvalds/linux</button>
                 </div>
+
+                <div class="bulk-upload-section">
+                    <button id="bulk-upload-btn" class="bulk-btn">Bulk Upload</button>
+                    <span class="bulk-hint">Submit up to 20 repositories at once</span>
+                </div>
             </div>
         </section>
 
@@ -132,6 +137,30 @@
         <div class="modal-content">
             <button class="modal-close" aria-label="Close">&times;</button>
             <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Bulk Upload Modal -->
+    <div id="bulk-modal" class="modal" hidden>
+        <div class="modal-backdrop bulk-backdrop"></div>
+        <div class="modal-content bulk-modal-content">
+            <button class="modal-close bulk-close" aria-label="Close">&times;</button>
+            <div class="bulk-modal-body">
+                <h3>Bulk Upload</h3>
+                <p>Enter GitHub repository URLs, one per line (max 20)</p>
+                <textarea id="bulk-urls" placeholder="https://github.com/owner/repo1&#10;https://github.com/owner/repo2&#10;https://github.com/owner/repo3" rows="8"></textarea>
+                <div id="bulk-message" class="form-message" hidden></div>
+                <div class="bulk-actions">
+                    <button id="bulk-submit-btn" class="submit-bulk-btn">
+                        <span class="btn-text">Submit All</span>
+                        <span class="btn-loading" hidden>
+                            <span class="spinner"></span>
+                        </span>
+                    </button>
+                    <button id="bulk-cancel-btn" class="cancel-btn">Cancel</button>
+                </div>
+                <div id="bulk-results" class="bulk-results" hidden></div>
+            </div>
         </div>
     </div>
 

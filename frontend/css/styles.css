@@ -350,6 +350,13 @@ button {
     word-break: break-word;
 }
 
+.repo-status-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
 .repo-status {
     font-size: 0.75rem;
     padding: 0.2rem 0.5rem;
@@ -785,5 +792,220 @@ button {
 
     .version-download {
         text-align: center;
+    }
+}
+
+/* Bulk Upload Section */
+.bulk-upload-section {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.bulk-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    transition: all var(--transition);
+}
+
+.bulk-btn:hover {
+    background: var(--color-border);
+    color: var(--color-text-bright);
+}
+
+.bulk-hint {
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+}
+
+/* Bulk Modal */
+.bulk-modal-content {
+    max-width: 550px;
+}
+
+.bulk-modal-body h3 {
+    font-size: 1.25rem;
+    color: var(--color-text-bright);
+    margin-bottom: 0.5rem;
+}
+
+.bulk-modal-body > p {
+    color: var(--color-text-muted);
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+}
+
+#bulk-urls {
+    width: 100%;
+    padding: 0.875rem;
+    font-size: 0.9rem;
+    font-family: monospace;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    color: var(--color-text);
+    resize: vertical;
+    min-height: 120px;
+}
+
+#bulk-urls:focus {
+    outline: none;
+    border-color: var(--color-primary);
+}
+
+#bulk-urls::placeholder {
+    color: var(--color-text-muted);
+}
+
+.bulk-actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.submit-bulk-btn {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    background: var(--color-primary);
+    color: var(--color-bg);
+    border: none;
+    border-radius: var(--radius);
+    transition: background var(--transition);
+}
+
+.submit-bulk-btn:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+}
+
+.submit-bulk-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.cancel-btn {
+    padding: 0.75rem 1.5rem;
+    font-size: 0.95rem;
+    background: var(--color-bg-tertiary);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    transition: all var(--transition);
+}
+
+.cancel-btn:hover {
+    background: var(--color-border);
+}
+
+.bulk-results {
+    margin-top: 1rem;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.bulk-result-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.bulk-result-item:last-child {
+    border-bottom: none;
+}
+
+.bulk-result-icon {
+    flex-shrink: 0;
+    font-size: 1rem;
+}
+
+.bulk-result-url {
+    flex: 1;
+    word-break: break-all;
+    color: var(--color-text-muted);
+}
+
+.bulk-result-status {
+    font-size: 0.8rem;
+}
+
+.bulk-result-status.success {
+    color: var(--color-success);
+}
+
+.bulk-result-status.error {
+    color: var(--color-error);
+}
+
+.bulk-summary {
+    padding: 0.75rem;
+    background: var(--color-bg);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    text-align: center;
+    font-size: 0.9rem;
+}
+
+/* Online/Offline Status Indicator */
+.repo-source-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.4rem;
+    border-radius: var(--radius);
+    margin-left: 0.5rem;
+}
+
+.repo-source-status.online {
+    background: rgba(63, 185, 80, 0.1);
+    color: var(--color-success);
+}
+
+.repo-source-status.offline {
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--color-error);
+}
+
+.repo-source-status.checking {
+    background: rgba(88, 166, 255, 0.1);
+    color: var(--color-primary);
+}
+
+.status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.status-dot.pulse {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+@media (max-width: 640px) {
+    .bulk-upload-section {
+        flex-direction: column;
+        text-align: center;
+    }
+
+    .bulk-actions {
+        flex-direction: column;
     }
 }

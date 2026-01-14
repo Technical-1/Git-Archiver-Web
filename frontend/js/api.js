@@ -106,7 +106,7 @@ const API = {
     },
 
     /**
-     * Fetch README content from a release
+     * Fetch README content from a release via worker proxy
      * @param {string} owner - Repo owner
      * @param {string} repo - Repo name
      * @param {string} tag - Release tag (optional, uses latest if not provided)
@@ -114,30 +114,69 @@ const API = {
      */
     async fetchReadme(owner, repo, tag = null) {
         try {
-            // If no tag, get the latest release for this repo
-            if (!tag) {
-                const versions = await this.fetchRepoVersions(owner, repo);
-                if (versions.length === 0) return null;
-                tag = versions[0].tag;
+            let url = `${this.config.WORKER_URL}/readme?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
+            if (tag) {
+                url += `&tag=${encodeURIComponent(tag)}`;
             }
 
-            // Find README asset
-            const releaseUrl = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases/tags/${tag}`;
-            const response = await fetch(releaseUrl);
+            const response = await fetch(url);
             if (!response.ok) return null;
 
-            const release = await response.json();
-            const readmeAsset = release.assets?.find(a => a.name.toLowerCase() === 'readme.md');
-            if (!readmeAsset) return null;
-
-            // Fetch README content via download URL
-            const readmeResponse = await fetch(readmeAsset.browser_download_url);
-            if (!readmeResponse.ok) return null;
-
-            return await readmeResponse.text();
+            const data = await response.json();
+            return data.readme;
         } catch (error) {
             console.error('Error fetching README:', error);
             return null;
+        }
+    },
+
+    /**
+     * Check if original repository is online/offline
+     * @param {string} owner - Repo owner
+     * @param {string} repo - Repo name
+     * @returns {Promise<Object>}
+     */
+    async checkRepoStatus(owner, repo) {
+        try {
+            const url = `${this.config.WORKER_URL}/status?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
+            const response = await fetch(url);
+
+            if (!response.ok) {
+                return { online: null, status: 'error', message: 'Failed to check status' };
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.error('Error checking repo status:', error);
+            return { online: null, status: 'error', message: 'Failed to check status' };
+        }
+    },
+
+    /**
+     * Submit multiple repository URLs for archiving
+     * @param {Array<string>} urls - Array of GitHub repository URLs
+     * @returns {Promise<Object>}
+     */
+    async bulkSubmit(urls) {
+        try {
+            const response = await fetch(`${this.config.WORKER_URL}/bulk-submit`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ urls })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok && !data.results) {
+                throw new Error(data.error || 'Bulk submission failed');
+            }
+
+            return data;
+        } catch (error) {
+            console.error('Error bulk submitting URLs:', error);
+            throw error;
         }
     },
 

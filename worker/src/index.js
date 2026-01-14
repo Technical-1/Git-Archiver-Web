@@ -44,12 +44,38 @@ export default {
             return handleIndexFetch(env);
         }
 
+        if (request.method === 'GET' && url.pathname === '/readme') {
+            const owner = url.searchParams.get('owner');
+            const repo = url.searchParams.get('repo');
+            const tag = url.searchParams.get('tag');
+            if (!owner || !repo) {
+                return errorResponse(400, 'Missing owner or repo parameter');
+            }
+            return handleReadmeFetch(owner, repo, tag, env);
+        }
+
+        if (request.method === 'GET' && url.pathname === '/status') {
+            const owner = url.searchParams.get('owner');
+            const repo = url.searchParams.get('repo');
+            if (!owner || !repo) {
+                return errorResponse(400, 'Missing owner or repo parameter');
+            }
+            return handleStatusCheck(owner, repo);
+        }
+
+        if (request.method === 'POST' && url.pathname === '/bulk-submit') {
+            return handleBulkSubmit(request, env);
+        }
+
         if (request.method === 'GET' && url.pathname === '/') {
             return jsonResponse({
                 service: 'Git-Archiver Web API',
                 endpoints: {
                     'POST /submit': 'Submit a repository URL for archiving',
+                    'POST /bulk-submit': 'Submit multiple repository URLs',
                     'GET /index': 'Fetch the master index of archived repositories',
+                    'GET /readme': 'Fetch README for archived repo (?owner=X&repo=Y&tag=Z)',
+                    'GET /status': 'Check if original repo is online (?owner=X&repo=Y)',
                     'GET /health': 'Health check'
                 }
             });
@@ -414,4 +440,246 @@ function formatBytes(bytes) {
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Fetch README from archived release
+ * Proxies the request to avoid CORS issues
+ */
+async function handleReadmeFetch(owner, repo, tag, env) {
+    try {
+        const githubHeaders = {
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Git-Archiver-Worker/1.0',
+            'Authorization': `token ${env.GITHUB_TOKEN}`
+        };
+
+        // If no tag provided, find the latest release for this repo
+        let releaseTag = tag;
+        if (!releaseTag) {
+            // Fetch all releases and find latest for this owner/repo
+            const releasesUrl = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases?per_page=100`;
+            const releasesResponse = await fetch(releasesUrl, { headers: githubHeaders });
+
+            if (!releasesResponse.ok) {
+                return errorResponse(500, 'Failed to fetch releases');
+            }
+
+            const releases = await releasesResponse.json();
+            const repoPrefix = `${owner}__${repo}__`;
+            const matchingReleases = releases.filter(r => r.tag_name.startsWith(repoPrefix));
+
+            if (matchingReleases.length === 0) {
+                return errorResponse(404, 'No archived versions found for this repository');
+            }
+
+            // Sort by date (newest first) and get the latest
+            matchingReleases.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            releaseTag = matchingReleases[0].tag_name;
+        }
+
+        // Fetch the release to get README asset
+        const releaseUrl = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/tags/${releaseTag}`;
+        const releaseResponse = await fetch(releaseUrl, { headers: githubHeaders });
+
+        if (!releaseResponse.ok) {
+            if (releaseResponse.status === 404) {
+                return errorResponse(404, 'Release not found');
+            }
+            throw new Error(`Failed to fetch release: ${releaseResponse.status}`);
+        }
+
+        const release = await releaseResponse.json();
+
+        // Find README asset
+        const readmeAsset = release.assets?.find(a => a.name === 'README.md');
+        if (!readmeAsset) {
+            return jsonResponse({ readme: null, message: 'No README available for this archive' });
+        }
+
+        // Fetch README content
+        const readmeResponse = await fetch(readmeAsset.url, {
+            headers: {
+                'Accept': 'application/octet-stream',
+                'User-Agent': 'Git-Archiver-Worker/1.0',
+                'Authorization': `token ${env.GITHUB_TOKEN}`
+            }
+        });
+
+        if (!readmeResponse.ok) {
+            throw new Error(`Failed to fetch README: ${readmeResponse.status}`);
+        }
+
+        const readmeContent = await readmeResponse.text();
+        return jsonResponse({ readme: readmeContent, tag: releaseTag });
+
+    } catch (error) {
+        console.error('README fetch error:', error);
+        return errorResponse(500, 'Failed to fetch README');
+    }
+}
+
+/**
+ * Check if original repository is still online
+ */
+async function handleStatusCheck(owner, repo) {
+    try {
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'Git-Archiver-Worker/1.0'
+            }
+        });
+
+        if (response.status === 404) {
+            return jsonResponse({
+                online: false,
+                status: 'deleted',
+                message: 'Repository not found'
+            });
+        }
+
+        if (response.status === 451) {
+            return jsonResponse({
+                online: false,
+                status: 'dmca',
+                message: 'Repository unavailable due to DMCA'
+            });
+        }
+
+        if (!response.ok) {
+            return jsonResponse({
+                online: null,
+                status: 'unknown',
+                message: `Unable to check status: ${response.status}`
+            });
+        }
+
+        const data = await response.json();
+
+        return jsonResponse({
+            online: true,
+            status: data.archived ? 'archived' : 'active',
+            private: data.private,
+            archived: data.archived,
+            message: data.archived ? 'Repository is archived on GitHub' : 'Repository is active'
+        });
+
+    } catch (error) {
+        console.error('Status check error:', error);
+        return jsonResponse({
+            online: null,
+            status: 'error',
+            message: 'Failed to check repository status'
+        });
+    }
+}
+
+/**
+ * Handle bulk submission of multiple repositories
+ */
+async function handleBulkSubmit(request, env) {
+    try {
+        const body = await request.json();
+        const urls = body.urls;
+
+        if (!Array.isArray(urls) || urls.length === 0) {
+            return errorResponse(400, 'Missing or empty urls array');
+        }
+
+        // Limit bulk submissions
+        const MAX_BULK_URLS = 20;
+        if (urls.length > MAX_BULK_URLS) {
+            return errorResponse(400, `Maximum ${MAX_BULK_URLS} URLs per bulk submission`);
+        }
+
+        const results = [];
+        const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+        for (const url of urls) {
+            const repoUrl = url?.trim();
+
+            // Validate URL
+            if (!repoUrl) {
+                results.push({ url, success: false, error: 'Empty URL' });
+                continue;
+            }
+
+            const match = repoUrl.match(GITHUB_URL_REGEX);
+            if (!match) {
+                results.push({ url: repoUrl, success: false, error: 'Invalid GitHub URL' });
+                continue;
+            }
+
+            const [, owner, repo] = match;
+
+            try {
+                // Check if repository exists
+                const repoCheck = await checkRepository(owner, repo);
+                if (!repoCheck.exists) {
+                    results.push({ url: repoUrl, success: false, error: 'Repository not found' });
+                    continue;
+                }
+
+                if (repoCheck.private) {
+                    results.push({ url: repoUrl, success: false, error: 'Cannot archive private repositories' });
+                    continue;
+                }
+
+                // Check size limit
+                const maxSizeBytes = 2 * 1024 * 1024 * 1024;
+                if (repoCheck.size > maxSizeBytes) {
+                    results.push({ url: repoUrl, success: false, error: `Repository too large (${formatBytes(repoCheck.size)})` });
+                    continue;
+                }
+
+                // Check for existing pending request
+                const existingIssue = await checkExistingRequest(owner, repo, env);
+                if (existingIssue) {
+                    results.push({ url: repoUrl, success: false, error: `Already queued (Issue #${existingIssue.number})`, issue_number: existingIssue.number });
+                    continue;
+                }
+
+                // Check if already archived today
+                const todayRelease = await checkTodayRelease(owner, repo, env);
+                if (todayRelease) {
+                    results.push({ url: repoUrl, success: false, error: 'Already archived today', release_url: todayRelease.url });
+                    continue;
+                }
+
+                // Create GitHub issue
+                const issue = await createGitHubIssue(owner, repo, repoUrl, env);
+                results.push({
+                    url: repoUrl,
+                    success: true,
+                    issue_number: issue.number,
+                    issue_url: issue.html_url
+                });
+
+                // Small delay between issue creations to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+            } catch (error) {
+                console.error(`Bulk submit error for ${repoUrl}:`, error);
+                results.push({ url: repoUrl, success: false, error: 'Failed to process' });
+            }
+        }
+
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success).length;
+
+        return jsonResponse({
+            success: true,
+            summary: {
+                total: urls.length,
+                successful,
+                failed
+            },
+            results
+        }, successful > 0 ? 201 : 200);
+
+    } catch (error) {
+        console.error('Bulk submit error:', error);
+        return errorResponse(500, 'Internal server error');
+    }
 }
