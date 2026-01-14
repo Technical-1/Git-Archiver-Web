@@ -516,7 +516,6 @@ button {
 }
 
 .footer-credit span {
-    font-style: italic;
     font-size: 1.1rem;
     color: var(--color-primary);
     letter-spacing: 0.02em;
