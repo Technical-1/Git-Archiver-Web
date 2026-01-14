@@ -2,7 +2,7 @@ name: Archive Repository
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]  # Only trigger on open, not labeled (avoids double runs)
   workflow_dispatch:
     inputs:
       url:
