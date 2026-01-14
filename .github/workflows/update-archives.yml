@@ -1,0 +1,87 @@
+name: Update Existing Archives
+
+on:
+  schedule:
+    # Run daily at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      max_repos:
+        description: 'Maximum number of repos to update'
+        required: false
+        default: '10'
+        type: string
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download index
+        id: index
+        run: |
+          INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
+
+          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ]; then
+            echo "Downloaded index with $(jq '.total_repos' index.json) repositories"
+            echo "has_index=true" >> $GITHUB_OUTPUT
+          else
+            echo "No index found"
+            echo "has_index=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Select repositories to update
+        if: steps.index.outputs.has_index == 'true'
+        id: select
+        run: |
+          MAX_REPOS="${{ github.event.inputs.max_repos || '10' }}"
+
+          # Get repos that haven't been updated in the last 7 days
+          # Sort by last_archived (oldest first) and take MAX_REPOS
+          CUTOFF_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-7d +%Y-%m-%dT%H:%M:%SZ)
+
+          jq -r --arg cutoff "$CUTOFF_DATE" '
+            .repositories
+            | to_entries
+            | map(select(.value.last_archived < $cutoff and .value.status == "active"))
+            | sort_by(.value.last_archived)
+            | .[0:'$MAX_REPOS']
+            | .[].key
+          ' index.json > repos_to_update.txt
+
+          REPO_COUNT=$(wc -l < repos_to_update.txt | tr -d ' ')
+          echo "Found $REPO_COUNT repositories to update"
+          echo "count=$REPO_COUNT" >> $GITHUB_OUTPUT
+
+          cat repos_to_update.txt
+
+      - name: Update repositories
+        if: steps.select.outputs.count > 0
+        run: |
+          while IFS= read -r REPO_URL; do
+            echo "========================================"
+            echo "Updating: $REPO_URL"
+            echo "========================================"
+
+            # Trigger the archive workflow
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/archive.yml/dispatches" \
+              -d "{\"ref\":\"main\",\"inputs\":{\"url\":\"$REPO_URL\"}}"
+
+            # Wait between requests to avoid rate limiting
+            sleep 30
+
+          done < repos_to_update.txt
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repositories checked:** ${{ steps.select.outputs.count || 0 }}" >> $GITHUB_STEP_SUMMARY

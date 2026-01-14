@@ -1,0 +1,344 @@
+name: Archive Repository
+
+on:
+  issues:
+    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'GitHub repository URL to archive'
+        required: true
+        type: string
+
+# Ensure only one archive job runs at a time
+concurrency:
+  group: archive-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    # Only run if issue has archive-request label OR manual dispatch
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'archive-request')) ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse repository URL
+        id: parse
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            URL="${{ github.event.inputs.url }}"
+          else
+            # Extract URL from issue body
+            URL=$(echo "${{ github.event.issue.body }}" | grep -oP 'url:\s*\K(https://github\.com/[^\s]+)' | head -1)
+          fi
+
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+          # Parse owner and repo
+          if [[ $URL =~ github\.com/([^/]+)/([^/]+) ]]; then
+            OWNER="${BASH_REMATCH[1]}"
+            REPO="${BASH_REMATCH[2]}"
+            REPO="${REPO%.git}"
+            REPO="${REPO%/}"
+
+            echo "owner=$OWNER" >> $GITHUB_OUTPUT
+            echo "repo=$REPO" >> $GITHUB_OUTPUT
+            echo "valid=true" >> $GITHUB_OUTPUT
+
+            # Generate release tag
+            DATE=$(date +%Y-%m-%d)
+            TAG="${OWNER}__${REPO}__${DATE}"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "date=$DATE" >> $GITHUB_OUTPUT
+          else
+            echo "valid=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "Parsed URL: $URL"
+          echo "Owner: $OWNER, Repo: $REPO"
+
+      - name: Validate repository
+        id: validate
+        if: steps.parse.outputs.valid == 'true'
+        run: |
+          OWNER="${{ steps.parse.outputs.owner }}"
+          REPO="${{ steps.parse.outputs.repo }}"
+
+          echo "Checking repository: $OWNER/$REPO"
+
+          # Fetch repository info from GitHub API
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "User-Agent: Git-Archiver" \
+            "https://api.github.com/repos/$OWNER/$REPO")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Repository not found or inaccessible (HTTP $HTTP_CODE)"
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "error=Repository not found" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check if private
+          IS_PRIVATE=$(echo "$BODY" | jq -r '.private')
+          if [ "$IS_PRIVATE" == "true" ]; then
+            echo "Cannot archive private repositories"
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "error=Private repository" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get repository info
+          SIZE_KB=$(echo "$BODY" | jq -r '.size')
+          SIZE_MB=$((SIZE_KB / 1024))
+          DESCRIPTION=$(echo "$BODY" | jq -r '.description // empty')
+          IS_ARCHIVED=$(echo "$BODY" | jq -r '.archived')
+          STARS=$(echo "$BODY" | jq -r '.stargazers_count')
+
+          echo "Size: ${SIZE_MB}MB, Stars: $STARS, Archived: $IS_ARCHIVED"
+
+          # Check size limit (2GB = 2097152 KB)
+          if [ "$SIZE_KB" -gt 2097152 ]; then
+            echo "Repository too large: ${SIZE_MB}MB"
+            echo "valid=false" >> $GITHUB_OUTPUT
+            echo "error=Repository too large (${SIZE_MB}MB > 2GB)" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "description=$DESCRIPTION" >> $GITHUB_OUTPUT
+          echo "is_archived=$IS_ARCHIVED" >> $GITHUB_OUTPUT
+          echo "stars=$STARS" >> $GITHUB_OUTPUT
+
+      - name: Clone repository
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          URL="${{ steps.parse.outputs.url }}"
+          echo "Cloning $URL..."
+
+          # Clone with limited depth for faster cloning
+          # Use --mirror for full clone, --depth 100 for partial
+          git clone --depth 100 "$URL" repo
+
+          # Get commit info
+          cd repo
+          COMMIT_HASH=$(git rev-parse HEAD)
+          COMMIT_DATE=$(git log -1 --format=%ci)
+          FILE_COUNT=$(git ls-files | wc -l)
+
+          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+          cd ..
+
+      - name: Create archive
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          echo "Creating archive..."
+
+          # Create tar.gz archive
+          tar -czf archive.tar.gz -C repo .
+
+          # Get archive size
+          ARCHIVE_SIZE=$(stat -f%z archive.tar.gz 2>/dev/null || stat -c%s archive.tar.gz)
+          ARCHIVE_SIZE_MB=$((ARCHIVE_SIZE / 1024 / 1024))
+          echo "Archive size: ${ARCHIVE_SIZE_MB}MB"
+
+          echo "archive_size=$ARCHIVE_SIZE" >> $GITHUB_OUTPUT
+          echo "archive_size_mb=$ARCHIVE_SIZE_MB" >> $GITHUB_OUTPUT
+
+      - name: Create metadata
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          cat > metadata.json << EOF
+          {
+            "url": "${{ steps.parse.outputs.url }}",
+            "owner": "${{ steps.parse.outputs.owner }}",
+            "repo": "${{ steps.parse.outputs.repo }}",
+            "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "commit_hash": "${{ steps.validate.outputs.commit_hash }}",
+            "description": "${{ steps.validate.outputs.description }}",
+            "size_bytes": ${{ steps.validate.outputs.archive_size || 0 }},
+            "original_size_mb": ${{ steps.validate.outputs.size_mb || 0 }},
+            "stars": ${{ steps.validate.outputs.stars || 0 }},
+            "is_archived": ${{ steps.validate.outputs.is_archived || false }}
+          }
+          EOF
+
+          cat metadata.json
+
+      - name: Create GitHub Release
+        if: steps.validate.outputs.valid == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.parse.outputs.tag }}
+          name: "${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }} - ${{ steps.parse.outputs.date }}"
+          body: |
+            Archive of [${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }}](https://github.com/${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }})
+
+            - **Archived**: ${{ steps.parse.outputs.date }}
+            - **Size**: ${{ steps.validate.outputs.archive_size_mb }}MB
+            - **Stars**: ${{ steps.validate.outputs.stars }}
+
+            ${{ steps.validate.outputs.description }}
+          files: |
+            archive.tar.gz
+            metadata.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update index
+        if: steps.validate.outputs.valid == 'true'
+        run: |
+          # Download existing index or create new one
+          INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
+
+          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ]; then
+            echo "Downloaded existing index"
+          else
+            echo '{"repositories": {}, "total_repos": 0, "total_size_mb": 0, "last_updated": ""}' > index.json
+          fi
+
+          # Update index with jq
+          REPO_URL="${{ steps.parse.outputs.url }}"
+          OWNER="${{ steps.parse.outputs.owner }}"
+          REPO="${{ steps.parse.outputs.repo }}"
+          TAG="${{ steps.parse.outputs.tag }}"
+          SIZE_MB="${{ steps.validate.outputs.archive_size_mb }}"
+          DESCRIPTION="${{ steps.validate.outputs.description }}"
+          STATUS="${{ steps.validate.outputs.is_archived == 'true' && 'archived' || 'active' }}"
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Check if repo already exists
+          EXISTING=$(jq -r ".repositories[\"$REPO_URL\"]" index.json)
+
+          if [ "$EXISTING" == "null" ]; then
+            # Add new repository
+            jq --arg url "$REPO_URL" \
+               --arg owner "$OWNER" \
+               --arg repo "$REPO" \
+               --arg desc "$DESCRIPTION" \
+               --arg status "$STATUS" \
+               --arg tag "$TAG" \
+               --arg now "$NOW" \
+               --argjson size "${SIZE_MB:-0}" \
+               '.repositories[$url] = {
+                 "owner": $owner,
+                 "repo": $repo,
+                 "description": $desc,
+                 "status": $status,
+                 "first_archived": $now,
+                 "last_archived": $now,
+                 "archive_count": 1,
+                 "latest_release_tag": $tag,
+                 "latest_size_mb": $size
+               } | .total_repos += 1 | .total_size_mb += $size | .last_updated = $now' \
+               index.json > index_new.json
+          else
+            # Update existing repository
+            PREV_COUNT=$(jq -r ".repositories[\"$REPO_URL\"].archive_count // 0" index.json)
+            NEW_COUNT=$((PREV_COUNT + 1))
+
+            jq --arg url "$REPO_URL" \
+               --arg tag "$TAG" \
+               --arg now "$NOW" \
+               --argjson size "${SIZE_MB:-0}" \
+               --argjson count "$NEW_COUNT" \
+               '.repositories[$url].last_archived = $now |
+                .repositories[$url].latest_release_tag = $tag |
+                .repositories[$url].latest_size_mb = $size |
+                .repositories[$url].archive_count = $count |
+                .last_updated = $now' \
+               index.json > index_new.json
+          fi
+
+          mv index_new.json index.json
+          cat index.json
+
+      - name: Upload index
+        if: steps.validate.outputs.valid == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: index
+          name: "Repository Index"
+          body: "Master index of all archived repositories. Auto-updated."
+          files: index.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on issue (success)
+        if: github.event_name == 'issues' && steps.validate.outputs.valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.parse.outputs.tag }}';
+            const owner = '${{ steps.parse.outputs.owner }}';
+            const repo = '${{ steps.parse.outputs.repo }}';
+            const sizeMB = '${{ steps.validate.outputs.archive_size_mb }}';
+
+            const downloadUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/archive.tar.gz`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ **Archive created successfully!**
+
+            **Repository:** ${owner}/${repo}
+            **Size:** ${sizeMB}MB
+            **Download:** [archive.tar.gz](${downloadUrl})
+
+            This issue will now be closed.`
+            });
+
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              labels: ['archive-request', 'completed']
+            });
+
+      - name: Comment on issue (failure)
+        if: github.event_name == 'issues' && (steps.parse.outputs.valid != 'true' || steps.validate.outputs.valid != 'true')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const parseValid = '${{ steps.parse.outputs.valid }}';
+            const validateValid = '${{ steps.validate.outputs.valid }}';
+            const error = '${{ steps.validate.outputs.error }}' || 'Invalid repository URL';
+
+            let message = '❌ **Archive failed**\n\n';
+
+            if (parseValid !== 'true') {
+              message += 'Could not parse repository URL from issue body.\n\n';
+              message += 'Please ensure the issue contains a line like:\n';
+              message += '```\nurl: https://github.com/owner/repo\n```';
+            } else {
+              message += `**Reason:** ${error}`;
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: message
+            });
+
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              labels: ['archive-request', 'failed']
+            });

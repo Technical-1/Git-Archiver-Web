@@ -1,0 +1,21 @@
+# Cloudflare Worker Configuration
+# See https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "git-archiver"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+# KV Namespace for rate limiting (create in Cloudflare dashboard)
+# Uncomment after creating the namespace
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT"
+# id = "YOUR_KV_NAMESPACE_ID"
+
+# Environment variables (set via wrangler secret)
+# Run: wrangler secret put GITHUB_TOKEN
+# Run: wrangler secret put GITHUB_OWNER
+# Run: wrangler secret put GITHUB_REPO
+
+[vars]
+# Public variables (non-secret)
+ALLOWED_ORIGIN = "*"
