@@ -461,6 +461,10 @@ button {
     padding: 1rem;
 }
 
+.modal[hidden] {
+    display: none;
+}
+
 .modal-backdrop {
     position: absolute;
     inset: 0;
