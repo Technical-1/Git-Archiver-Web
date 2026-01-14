@@ -39,21 +39,19 @@ jobs:
         run: |
           MAX_REPOS="${{ github.event.inputs.max_repos || '10' }}"
 
-          # Get repos that haven't been updated in the last 7 days
-          # Sort by last_archived (oldest first) and take MAX_REPOS
-          CUTOFF_DATE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-7d +%Y-%m-%dT%H:%M:%SZ)
-
-          jq -r --arg cutoff "$CUTOFF_DATE" '
+          # Get all active repos, sorted by last_archived (oldest first)
+          # Hash comparison in archive workflow prevents duplicate releases
+          jq -r '
             .repositories
             | to_entries
-            | map(select(.value.last_archived < $cutoff and .value.status == "active"))
+            | map(select(.value.status == "active"))
             | sort_by(.value.last_archived)
             | .[0:'$MAX_REPOS']
             | .[].key
           ' index.json > repos_to_update.txt
 
           REPO_COUNT=$(wc -l < repos_to_update.txt | tr -d ' ')
-          echo "Found $REPO_COUNT repositories to update"
+          echo "Found $REPO_COUNT repositories to check for updates"
           echo "count=$REPO_COUNT" >> $GITHUB_OUTPUT
 
           cat repos_to_update.txt
@@ -81,7 +79,9 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo "## Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Daily Update Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
           echo "- **Repositories checked:** ${{ steps.select.outputs.count || 0 }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "_Note: Only repos with new commits will create new releases (hash comparison)_" >> $GITHUB_STEP_SUMMARY
