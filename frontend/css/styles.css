@@ -491,6 +491,8 @@ button {
     background: none;
     border: none;
     color: var(--color-text-muted);
+    cursor: pointer;
+    z-index: 10;
     transition: color var(--transition);
 }
 
