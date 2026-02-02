@@ -23,12 +23,30 @@ concurrency:
 jobs:
   archive:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Only run if issue has archive-request label OR manual dispatch
     if: |
       (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'archive-request')) ||
       github.event_name == 'workflow_dispatch'
 
     steps:
+      - name: Setup retry function
+        run: |
+          cat > /tmp/retry.sh << 'RETRY_SCRIPT'
+          #!/bin/bash
+          MAX_ATTEMPTS=$1
+          shift
+          ATTEMPT=1
+          DELAY=5
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            if "$@"; then exit 0; fi
+            [ $ATTEMPT -lt $MAX_ATTEMPTS ] && sleep $DELAY && DELAY=$((DELAY * 2))
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          exit 1
+          RETRY_SCRIPT
+          chmod +x /tmp/retry.sh
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -126,29 +144,40 @@ jobs:
 
       - name: Clone repository
         if: steps.validate.outputs.valid == 'true'
+        id: clone
+        timeout-minutes: 10
         run: |
           URL="${{ steps.parse.outputs.url }}"
-          echo "Cloning $URL..."
+          SIZE_MB="${{ steps.validate.outputs.size_mb }}"
 
-          # Clone with limited depth for faster cloning
-          # Use --mirror for full clone, --depth 100 for partial
-          git clone --depth 100 "$URL" repo
+          # Adjust depth based on repo size
+          if [ "$SIZE_MB" -lt 100 ]; then
+            DEPTH="--depth 500"
+          elif [ "$SIZE_MB" -lt 500 ]; then
+            DEPTH="--depth 100"
+          else
+            DEPTH="--depth 50"
+          fi
 
-          # Get commit info
+          echo "Cloning $URL with $DEPTH..."
+
+          timeout 540 git clone $DEPTH "$URL" repo || {
+            echo "Clone failed or timed out"
+            exit 1
+          }
+
+          # Verify clone
+          [ -d "repo/.git" ] || exit 1
+
           cd repo
-          COMMIT_HASH=$(git rev-parse HEAD)
-          COMMIT_DATE=$(git log -1 --format=%ci)
-          FILE_COUNT=$(git ls-files | wc -l)
-
-          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
-          echo "commit_date=$COMMIT_DATE" >> $GITHUB_OUTPUT
-          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
-
-          cd ..
+          echo "commit_hash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "commit_date=$(git log -1 --format=%ci)" >> $GITHUB_OUTPUT
+          echo "file_count=$(git ls-files | wc -l)" >> $GITHUB_OUTPUT
 
       - name: Create archive
         if: steps.validate.outputs.valid == 'true'
         id: archive
+        timeout-minutes: 15
         run: |
           OWNER="${{ steps.parse.outputs.owner }}"
           REPO="${{ steps.parse.outputs.repo }}"
@@ -194,22 +223,34 @@ jobs:
       - name: Create metadata
         if: steps.validate.outputs.valid == 'true'
         run: |
-          cat > metadata.json << EOF
-          {
-            "url": "${{ steps.parse.outputs.url }}",
-            "owner": "${{ steps.parse.outputs.owner }}",
-            "repo": "${{ steps.parse.outputs.repo }}",
-            "archived_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "commit_hash": "${{ steps.validate.outputs.commit_hash }}",
-            "description": "${{ steps.validate.outputs.description }}",
-            "size_bytes": ${{ steps.archive.outputs.archive_size || 0 }},
-            "original_size_mb": ${{ steps.validate.outputs.size_mb || 0 }},
-            "stars": ${{ steps.validate.outputs.stars || 0 }},
-            "is_archived": ${{ steps.validate.outputs.is_archived || false }},
-            "archive_hash": "${{ steps.archive.outputs.archive_hash }}",
-            "archive_name": "${{ steps.archive.outputs.archive_name }}"
-          }
-          EOF
+          # Use jq to safely create JSON with proper escaping
+          jq -n \
+            --arg url "${{ steps.parse.outputs.url }}" \
+            --arg owner "${{ steps.parse.outputs.owner }}" \
+            --arg repo "${{ steps.parse.outputs.repo }}" \
+            --arg archived_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg commit_hash "${{ steps.clone.outputs.commit_hash }}" \
+            --arg description "${{ steps.validate.outputs.description }}" \
+            --argjson size_bytes "${{ steps.archive.outputs.archive_size || 0 }}" \
+            --argjson original_size_mb "${{ steps.validate.outputs.size_mb || 0 }}" \
+            --argjson stars "${{ steps.validate.outputs.stars || 0 }}" \
+            --argjson is_archived "${{ steps.validate.outputs.is_archived || false }}" \
+            --arg archive_hash "${{ steps.archive.outputs.archive_hash }}" \
+            --arg archive_name "${{ steps.archive.outputs.archive_name }}" \
+            '{
+              url: $url,
+              owner: $owner,
+              repo: $repo,
+              archived_at: $archived_at,
+              commit_hash: $commit_hash,
+              description: $description,
+              size_bytes: $size_bytes,
+              original_size_mb: $original_size_mb,
+              stars: $stars,
+              is_archived: $is_archived,
+              archive_hash: $archive_hash,
+              archive_name: $archive_name
+            }' > metadata.json
 
           cat metadata.json
 
@@ -281,6 +322,71 @@ jobs:
             ${{ steps.archive.outputs.archive_name }}
             metadata.json
             README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Backup existing index
+        if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
+        id: backup_index
+        run: |
+          # Download existing index
+          INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
+
+          echo "Attempting to download existing index from: $INDEX_URL"
+
+          if curl -sL -o existing_index.json "$INDEX_URL" && [ -s existing_index.json ]; then
+            # Check if it's valid JSON
+            if jq -e '.' existing_index.json >/dev/null 2>&1; then
+              echo "Valid index.json found, creating backup..."
+
+              # Generate backup tag with timestamp
+              BACKUP_TAG="index-backup-$(date -u +%Y%m%d-%H%M%S)"
+              BACKUP_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+              echo "Backup tag: $BACKUP_TAG"
+              echo "Backup time: $BACKUP_TIME"
+
+              # Add backup metadata to the index
+              jq --arg backup_tag "$BACKUP_TAG" \
+                 --arg backup_time "$BACKUP_TIME" \
+                 '. + {backup_metadata: {backup_tag: $backup_tag, backup_time: $backup_time, original_last_updated: .last_updated}}' \
+                 existing_index.json > index_backup.json
+
+              echo "Backup index created with metadata:"
+              jq '.backup_metadata' index_backup.json
+
+              echo "has_backup=true" >> $GITHUB_OUTPUT
+              echo "backup_tag=$BACKUP_TAG" >> $GITHUB_OUTPUT
+              echo "backup_time=$BACKUP_TIME" >> $GITHUB_OUTPUT
+            else
+              echo "Downloaded file is not valid JSON, skipping backup"
+              echo "has_backup=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No existing index found or download failed, skipping backup"
+            echo "has_backup=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload index backup
+        if: steps.backup_index.outputs.has_backup == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.backup_index.outputs.backup_tag }}
+          name: "Index Backup - ${{ steps.backup_index.outputs.backup_time }}"
+          body: |
+            Automatic backup of index.json before update.
+
+            **Backup Details:**
+            - **Backup Tag:** `${{ steps.backup_index.outputs.backup_tag }}`
+            - **Backup Time:** ${{ steps.backup_index.outputs.backup_time }}
+            - **Triggered By:** Archive of ${{ steps.parse.outputs.owner }}/${{ steps.parse.outputs.repo }}
+            - **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            To restore this backup, use:
+            ```bash
+            ./scripts/restore-index.sh ${{ steps.backup_index.outputs.backup_tag }}
+            ```
+          files: index_backup.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -359,6 +465,48 @@ jobs:
           mv index_final.json index.json
 
           cat index.json
+
+          # Schema validation function
+          validate_index() {
+            local file=$1
+
+            # Check required top-level fields
+            if ! jq -e '.repositories and .total_repos != null and .total_size_mb != null and .last_updated' "$file" > /dev/null 2>&1; then
+              echo "ERROR: Missing required top-level fields"
+              return 1
+            fi
+
+            # Check total_repos is a number
+            if ! jq -e '.total_repos | type == "number"' "$file" > /dev/null 2>&1; then
+              echo "ERROR: total_repos must be a number"
+              return 1
+            fi
+
+            # Check repositories is an object
+            if ! jq -e '.repositories | type == "object"' "$file" > /dev/null 2>&1; then
+              echo "ERROR: repositories must be an object"
+              return 1
+            fi
+
+            # Verify count matches
+            ACTUAL_COUNT=$(jq '.repositories | length' "$file")
+            STATED_COUNT=$(jq '.total_repos' "$file")
+
+            if [ "$ACTUAL_COUNT" != "$STATED_COUNT" ]; then
+              echo "WARNING: Fixing total_repos mismatch ($STATED_COUNT -> $ACTUAL_COUNT)"
+              jq --argjson count "$ACTUAL_COUNT" '.total_repos = $count' "$file" > "${file}.tmp"
+              mv "${file}.tmp" "$file"
+            fi
+
+            echo "Index validation passed"
+            return 0
+          }
+
+          # Validate before uploading
+          if ! validate_index index.json; then
+            echo "Index validation failed - aborting"
+            exit 1
+          fi
 
       - name: Upload index
         if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
@@ -467,3 +615,51 @@ jobs:
               state: 'closed',
               labels: ['archive-request', 'failed']
             });
+
+      - name: Cleanup old backups
+        if: always()
+        run: |
+          echo "Cleaning up old index backups (keeping last 10)..."
+
+          # List all backup releases, sorted by creation date (newest first)
+          BACKUP_RELEASES=$(gh release list --limit 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("index-backup-"))] | sort_by(.createdAt) | reverse | .[].tagName')
+
+          if [ -z "$BACKUP_RELEASES" ]; then
+            echo "No backup releases found"
+            exit 0
+          fi
+
+          # Count total backups
+          TOTAL_BACKUPS=$(echo "$BACKUP_RELEASES" | wc -l | tr -d ' ')
+          echo "Found $TOTAL_BACKUPS backup releases"
+
+          # Keep only last 10, delete the rest
+          KEEP_COUNT=10
+          if [ "$TOTAL_BACKUPS" -le "$KEEP_COUNT" ]; then
+            echo "Only $TOTAL_BACKUPS backups exist, nothing to delete"
+            exit 0
+          fi
+
+          # Get backups to delete (skip first 10)
+          BACKUPS_TO_DELETE=$(echo "$BACKUP_RELEASES" | tail -n +$((KEEP_COUNT + 1)))
+          DELETE_COUNT=$(echo "$BACKUPS_TO_DELETE" | wc -l | tr -d ' ')
+
+          echo "Will delete $DELETE_COUNT old backups"
+
+          # Delete old backups
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
+              echo "Deleting backup: $tag"
+              gh release delete "$tag" --yes --cleanup-tag || echo "Warning: Failed to delete $tag"
+            fi
+          done <<< "$BACKUPS_TO_DELETE"
+
+          echo "Cleanup complete"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup on failure
+        if: failure()
+        run: |
+          rm -rf repo *.tar.gz index*.json

@@ -5,11 +5,15 @@ name = "git-archiver"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# KV Namespace for rate limiting (create in Cloudflare dashboard)
-# Uncomment after creating the namespace
-# [[kv_namespaces]]
-# binding = "RATE_LIMIT"
-# id = "YOUR_KV_NAMESPACE_ID"
+# KV Namespace for rate limiting
+# ⚠️  DEPLOYMENT REQUIRED: You MUST replace the ID below before deploying!
+# To set up:
+# 1. Run: wrangler kv:namespace create "RATE_LIMIT"
+# 2. Copy the ID from the output and replace "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" below
+# 3. The worker will fail-closed (reject all requests) if KV is unavailable
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 
 # Environment variables (set via wrangler secret)
 # Run: wrangler secret put GITHUB_TOKEN

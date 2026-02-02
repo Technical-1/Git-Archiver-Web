@@ -9,8 +9,14 @@ const App = {
         pendingRequests: [],
         filteredRepos: [],
         isLoading: true,
-        searchQuery: ''
+        searchQuery: '',
+        currentPage: 1,
+        pageSize: 50,
+        hasMore: true
     },
+
+    // Infinite scroll observer
+    scrollObserver: null,
 
     // DOM elements cache
     elements: {},
@@ -192,6 +198,57 @@ const App = {
     },
 
     /**
+     * Get paginated subset of filtered repos
+     */
+    getPaginatedRepos() {
+        const end = this.state.currentPage * this.state.pageSize;
+        this.state.hasMore = end < this.state.filteredRepos.length;
+        return this.state.filteredRepos.slice(0, end);
+    },
+
+    /**
+     * Load more repositories (for infinite scroll)
+     */
+    loadMore() {
+        if (!this.state.hasMore || this.state.isLoading) return;
+        this.state.currentPage++;
+        this.renderRepos();
+    },
+
+    /**
+     * Reset pagination to first page
+     */
+    resetPagination() {
+        this.state.currentPage = 1;
+        this.state.hasMore = true;
+    },
+
+    /**
+     * Setup infinite scroll observer
+     */
+    setupInfiniteScroll() {
+        // Disconnect previous observer if exists
+        if (this.scrollObserver) {
+            this.scrollObserver.disconnect();
+        }
+
+        const sentinel = document.getElementById('load-more-sentinel');
+        if (!sentinel) return;
+
+        this.scrollObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    this.loadMore();
+                }
+            });
+        }, {
+            rootMargin: '100px'
+        });
+
+        this.scrollObserver.observe(sentinel);
+    },
+
+    /**
      * Update statistics display
      */
     updateStats() {
@@ -231,9 +288,9 @@ const App = {
         Utils.hide(this.elements.reposLoading);
         Utils.hide(this.elements.reposError);
 
-        const repos = this.state.filteredRepos;
+        const allRepos = this.state.filteredRepos;
 
-        if (repos.length === 0) {
+        if (allRepos.length === 0) {
             Utils.show(this.elements.reposEmpty);
             Utils.hide(this.elements.reposList);
             return;
@@ -242,13 +299,27 @@ const App = {
         Utils.hide(this.elements.reposEmpty);
         Utils.show(this.elements.reposList);
 
-        this.elements.reposList.innerHTML = repos.map(repo => this.renderRepoCard(repo)).join('');
+        const repos = this.getPaginatedRepos();
+
+        // Build HTML with repos count (all content is sanitized via Utils.escapeHtml in renderRepoCard)
+        let html = `<div class="repos-count">Showing ${repos.length} of ${allRepos.length} repositories</div>`;
+        html += repos.map(repo => this.renderRepoCard(repo)).join('');
+
+        // Add load-more sentinel if there are more repos
+        if (this.state.hasMore) {
+            html += `<div id="load-more-sentinel" class="load-more-sentinel">
+                <span class="spinner"></span>
+                <span>Loading more...</span>
+            </div>`;
+        }
+
+        this.elements.reposList.innerHTML = html;
 
         // Bind click events to cards and check status
         this.elements.reposList.querySelectorAll('.repo-card').forEach(card => {
             card.addEventListener('click', () => {
                 const url = card.dataset.url;
-                const repo = repos.find(r => r.url === url);
+                const repo = allRepos.find(r => r.url === url);
                 if (repo) this.openRepoModal(repo);
             });
 
@@ -259,6 +330,9 @@ const App = {
                 this.checkRepoSourceStatus(owner, repo, card);
             }
         });
+
+        // Setup infinite scroll observer
+        this.setupInfiniteScroll();
     },
 
     /**
@@ -327,6 +401,7 @@ const App = {
             });
         }
 
+        this.resetPagination();
         this.renderRepos();
     },
 
@@ -381,10 +456,7 @@ const App = {
         try {
             const result = await API.submitUrl(url);
 
-            this.showFormMessage(
-                `Repository queued for archiving! Issue #${result.issue_number} created.`,
-                'success'
-            );
+            Toast.success('Repository queued! Issue #' + result.issue_number);
             this.elements.repoUrlInput.value = '';
 
             // Refresh pending requests
@@ -392,7 +464,7 @@ const App = {
             this.renderQueue();
             this.updateStats();
         } catch (error) {
-            this.showFormMessage(error.message || 'Failed to submit. Please try again.', 'error');
+            Toast.error(error.message || 'Failed to submit');
         } finally {
             this.setFormLoading(false);
         }
@@ -452,44 +524,58 @@ const App = {
             </div>
         `;
 
-        // Fetch versions and README in parallel
-        const [versions, readme] = await Promise.all([
-            API.fetchRepoVersions(repo.owner, repo.repo),
-            API.fetchReadme(repo.owner, repo.repo)
-        ]);
+        try {
+            // Fetch versions and README in parallel
+            const [versions, readme] = await Promise.all([
+                API.fetchRepoVersions(repo.owner, repo.repo),
+                API.fetchReadme(repo.owner, repo.repo)
+            ]);
 
-        // Render modal content with tabs
-        this.elements.modalBody.innerHTML = `
-            <div class="modal-header">
-                <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
-                <p>${Utils.escapeHtml(repo.description || 'No description')}</p>
-                <p>
-                    <a href="${Utils.escapeHtml(repo.url)}" target="_blank">View on GitHub →</a>
-                </p>
-            </div>
-
-            <div class="modal-tabs">
-                <button class="tab-btn active" data-tab="versions">Versions (${versions.length})</button>
-                <button class="tab-btn" data-tab="readme">README</button>
-            </div>
-
-            <div class="tab-content" id="tab-versions">
-                <div class="version-list">
-                    ${versions.length > 0 ? versions.map(version => this.renderVersion(version, repo)).join('') : '<p class="empty-message">No versions found</p>'}
+            // Render modal content with tabs
+            this.elements.modalBody.innerHTML = `
+                <div class="modal-header">
+                    <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
+                    <p>${Utils.escapeHtml(repo.description || 'No description')}</p>
+                    <p>
+                        <a href="${Utils.escapeHtml(repo.url)}" target="_blank">View on GitHub →</a>
+                    </p>
                 </div>
-            </div>
 
-            <div class="tab-content" id="tab-readme" hidden>
-                <div class="readme-content">
-                    ${readme ? Utils.renderMarkdown(readme) : '<p class="empty-message">No README available</p>'}
+                <div class="modal-tabs">
+                    <button class="tab-btn active" data-tab="versions">Versions (${versions.length})</button>
+                    <button class="tab-btn" data-tab="readme">README</button>
                 </div>
-            </div>
-        `;
 
-        // Bind tab events
-        this.elements.modalBody.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
-        });
+                <div class="tab-content" id="tab-versions">
+                    <div class="version-list">
+                        ${versions.length > 0 ? versions.map(version => this.renderVersion(version, repo)).join('') : '<p class="empty-message">No versions found</p>'}
+                    </div>
+                </div>
+
+                <div class="tab-content" id="tab-readme" hidden>
+                    <div class="readme-content">
+                        ${readme ? Utils.renderMarkdown(readme) : '<p class="empty-message">No README available</p>'}
+                    </div>
+                </div>
+            `;
+
+            // Bind tab events
+            this.elements.modalBody.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+            });
+        } catch (error) {
+            console.error('Error loading modal content:', error);
+            this.elements.modalBody.innerHTML = `
+                <div class="modal-header">
+                    <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
+                    <p>${Utils.escapeHtml(repo.description || 'No description')}</p>
+                </div>
+                <div class="error-state">
+                    <p>Failed to load repository details. Please try again.</p>
+                    <p class="error-details">${Utils.escapeHtml(error.message)}</p>
+                </div>
+            `;
+        }
     },
 
     /**
@@ -602,15 +688,19 @@ const App = {
             // Show results
             this.showBulkResults(result);
 
-            // Refresh queue if any were successful
+            // Show toast summary
             if (result.summary.successful > 0) {
+                Toast.success(`${result.summary.successful} repositories queued!`);
                 this.state.pendingRequests = await API.fetchPendingRequests();
                 this.renderQueue();
                 this.updateStats();
             }
+            if (result.summary.failed > 0) {
+                Toast.error(`${result.summary.failed} submissions failed`);
+            }
 
         } catch (error) {
-            this.showBulkMessage(error.message || 'Failed to submit. Please try again.', 'error');
+            Toast.error(error.message || 'Failed to submit');
         } finally {
             this.setBulkLoading(false);
         }
@@ -654,15 +744,18 @@ const App = {
             <div class="bulk-summary">
                 <strong>${summary.successful}</strong> queued, <strong>${summary.failed}</strong> failed
             </div>
-            ${results.map(r => `
+            ${results.map(r => {
+                const parsed = Utils.parseGitHubUrl(r.url);
+                const displayUrl = parsed ? `${parsed.owner}/${parsed.repo}` : r.url;
+                return `
                 <div class="bulk-result-item">
                     <span class="bulk-result-icon">${r.success ? '✓' : '✗'}</span>
-                    <span class="bulk-result-url">${Utils.escapeHtml(Utils.parseGitHubUrl(r.url)?.owner || '')}/${Utils.escapeHtml(Utils.parseGitHubUrl(r.url)?.repo || r.url)}</span>
+                    <span class="bulk-result-url">${Utils.escapeHtml(displayUrl)}</span>
                     <span class="bulk-result-status ${r.success ? 'success' : 'error'}">
                         ${r.success ? `#${r.issue_number}` : Utils.escapeHtml(r.error)}
                     </span>
                 </div>
-            `).join('')}
+            `}).join('')}
         `;
     },
 

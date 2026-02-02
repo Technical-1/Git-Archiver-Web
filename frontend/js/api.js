@@ -16,6 +16,19 @@ const API = {
     },
 
     /**
+     * Validate index structure
+     * @param {Object} index
+     * @returns {boolean}
+     */
+    validateIndex(index) {
+        if (!index || typeof index !== 'object') return false;
+        if (typeof index.repositories !== 'object') return false;
+        if (typeof index.total_repos !== 'number') return false;
+        if (typeof index.total_size_mb !== 'number') return false;
+        return true;
+    },
+
+    /**
      * Fetch the master index of all archived repositories
      * Uses the worker to proxy the request and avoid CORS issues
      * @returns {Promise<Object>}
@@ -28,7 +41,14 @@ const API = {
                 throw new Error(`Failed to fetch index: ${response.status}`);
             }
 
-            return await response.json();
+            const index = await response.json();
+
+            if (!this.validateIndex(index)) {
+                console.error('Index validation failed, using empty index');
+                return { repositories: {}, total_repos: 0, total_size_mb: 0 };
+            }
+
+            return index;
         } catch (error) {
             console.error('Error fetching index:', error);
             throw error;

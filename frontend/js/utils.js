@@ -169,53 +169,181 @@ const Utils = {
     },
 
     /**
-     * Simple markdown to HTML renderer
-     * Supports: headers, bold, italic, links, code blocks, lists
+     * Secure markdown to HTML renderer using marked.js and DOMPurify
      * @param {string} markdown
      * @returns {string}
      */
     renderMarkdown(markdown) {
         if (!markdown) return '';
 
-        let html = this.escapeHtml(markdown);
+        try {
+            // Check if marked and DOMPurify are available
+            if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+                console.warn('marked.js or DOMPurify not loaded, falling back to escaped text');
+                return '<pre>' + this.escapeHtml(markdown) + '</pre>';
+            }
 
-        // Code blocks (must be before inline code)
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+            // Allowed URL protocols
+            const allowedProtocols = ['http:', 'https:', 'mailto:'];
 
-        // Inline code
-        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Custom renderer for secure link handling
+            const renderer = new marked.Renderer();
 
-        // Headers
-        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+            // Override link rendering to add security attributes and validate URLs
+            renderer.link = function(href, title, text) {
+                // Handle marked.js v12+ object-based parameters
+                if (typeof href === 'object' && href !== null) {
+                    const token = href;
+                    href = token.href;
+                    title = token.title;
+                    text = token.text;
+                }
 
-        // Bold and italic
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+                // Validate URL protocol
+                try {
+                    const url = new URL(href, window.location.origin);
+                    if (!allowedProtocols.includes(url.protocol)) {
+                        // Strip dangerous protocols (javascript:, data:, etc.)
+                        return Utils.escapeHtml(text);
+                    }
+                } catch (e) {
+                    // If URL parsing fails, strip the link
+                    return Utils.escapeHtml(text);
+                }
 
-        // Links
-        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+                const titleAttr = title ? ` title="${Utils.escapeHtml(title)}"` : '';
+                return `<a href="${Utils.escapeHtml(href)}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+            };
 
-        // Unordered lists
-        html = html.replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>');
-        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+            // Override image rendering to validate src URLs
+            renderer.image = function(href, title, text) {
+                // Handle marked.js v12+ object-based parameters
+                if (typeof href === 'object' && href !== null) {
+                    const token = href;
+                    href = token.href;
+                    title = token.title;
+                    text = token.text;
+                }
 
-        // Paragraphs (double newlines)
-        html = html.replace(/\n\n/g, '</p><p>');
-        html = '<p>' + html + '</p>';
+                // Validate URL protocol
+                try {
+                    const url = new URL(href, window.location.origin);
+                    if (!allowedProtocols.includes(url.protocol)) {
+                        // Strip dangerous protocols
+                        return Utils.escapeHtml(text || '');
+                    }
+                } catch (e) {
+                    return Utils.escapeHtml(text || '');
+                }
 
-        // Clean up empty paragraphs
-        html = html.replace(/<p>\s*<\/p>/g, '');
-        html = html.replace(/<p>(<h[1-6]>)/g, '$1');
-        html = html.replace(/(<\/h[1-6]>)<\/p>/g, '$1');
-        html = html.replace(/<p>(<pre>)/g, '$1');
-        html = html.replace(/(<\/pre>)<\/p>/g, '$1');
-        html = html.replace(/<p>(<ul>)/g, '$1');
-        html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+                const titleAttr = title ? ` title="${Utils.escapeHtml(title)}"` : '';
+                const altAttr = text ? Utils.escapeHtml(text) : '';
+                return `<img src="${Utils.escapeHtml(href)}" alt="${altAttr}"${titleAttr} loading="lazy">`;
+            };
 
-        return html;
+            // Configure marked options
+            marked.setOptions({
+                gfm: true,
+                breaks: true,
+                headerIds: false,
+                mangle: false,
+                renderer: renderer
+            });
+
+            // Parse markdown to HTML
+            const rawHtml = marked.parse(markdown);
+
+            // Sanitize with DOMPurify using strict whitelist
+            const cleanHtml = DOMPurify.sanitize(rawHtml, {
+                ALLOWED_TAGS: [
+                    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                    'p', 'br', 'hr',
+                    'ul', 'ol', 'li',
+                    'a', 'img',
+                    'code', 'pre',
+                    'blockquote',
+                    'strong', 'em', 'del',
+                    'table', 'thead', 'tbody', 'tr', 'th', 'td'
+                ],
+                ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'target', 'rel', 'loading'],
+                ALLOW_DATA_ATTR: false,
+                ADD_ATTR: ['target', 'rel'],
+                FORBID_TAGS: ['script', 'style', 'iframe', 'form', 'input', 'object', 'embed'],
+                FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover']
+            });
+
+            return cleanHtml;
+        } catch (error) {
+            console.error('Error rendering markdown:', error);
+            return '<pre>' + this.escapeHtml(markdown) + '</pre>';
+        }
     }
+};
+
+/**
+ * Toast notification system
+ */
+const Toast = {
+    container: null,
+
+    init() {
+        if (this.container) return;
+        this.container = document.createElement('div');
+        this.container.id = 'toast-container';
+        this.container.className = 'toast-container';
+        document.body.appendChild(this.container);
+    },
+
+    show(message, type = 'info', duration = 5000) {
+        this.init();
+
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+
+        const icon = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' }[type] || 'ℹ';
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'toast-icon';
+        iconSpan.textContent = icon;
+
+        const msgSpan = document.createElement('span');
+        msgSpan.className = 'toast-message';
+        msgSpan.textContent = message;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'toast-close';
+        closeBtn.setAttribute('aria-label', 'Close');
+        closeBtn.textContent = '×';
+        closeBtn.onclick = () => this.remove(toast);
+
+        toast.appendChild(iconSpan);
+        toast.appendChild(msgSpan);
+        toast.appendChild(closeBtn);
+
+        this.container.appendChild(toast);
+
+        // Trigger animation
+        requestAnimationFrame(() => toast.classList.add('toast-visible'));
+
+        // Auto-remove (0 = persist)
+        if (duration > 0) {
+            setTimeout(() => this.remove(toast), duration);
+        }
+
+        return toast;
+    },
+
+    remove(toast) {
+        if (!toast || !toast.parentNode) return;
+        toast.classList.remove('toast-visible');
+        toast.classList.add('toast-hiding');
+        setTimeout(() => toast.remove(), 300);
+    },
+
+    success(message, duration = 5000) { return this.show(message, 'success', duration); },
+    error(message, duration = 0) { return this.show(message, 'error', duration); },
+    warning(message, duration = 5000) { return this.show(message, 'warning', duration); },
+    info(message, duration = 5000) { return this.show(message, 'info', duration); }
 };
 
 // Export for module usage if needed
