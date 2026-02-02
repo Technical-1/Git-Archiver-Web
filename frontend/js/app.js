@@ -18,6 +18,9 @@ const App = {
     // Infinite scroll observer
     scrollObserver: null,
 
+    // M6: Track pending status check requests to prevent race conditions
+    pendingStatusChecks: new Map(),
+
     // DOM elements cache
     elements: {},
 
@@ -40,6 +43,19 @@ const App = {
      */
     startAutoRefresh() {
         this.refreshTimer = setInterval(() => this.refreshQueue(), this.QUEUE_REFRESH_INTERVAL);
+
+        // M4 & M6: Clean up timer and pending status checks on page unload to prevent memory leaks
+        window.addEventListener('beforeunload', () => {
+            if (this.refreshTimer) {
+                clearInterval(this.refreshTimer);
+                this.refreshTimer = null;
+            }
+            // M6: Also abort and clear pending status checks
+            if (this.pendingStatusChecks) {
+                this.pendingStatusChecks.forEach(controller => controller.abort());
+                this.pendingStatusChecks.clear();
+            }
+        });
     },
 
     /**
@@ -188,12 +204,18 @@ const App = {
 
     /**
      * Get sorted list of repositories from index
+     * L3: Validates archive_count at data layer to prevent invalid values
      */
     getRepoList() {
         if (!this.state.index?.repositories) return [];
 
         return Object.entries(this.state.index.repositories)
-            .map(([url, data]) => ({ url, ...data }))
+            .map(([url, data]) => ({
+                url,
+                ...data,
+                // L3: Validate archive_count at data layer (clamp to 1-999)
+                archive_count: Math.min(Math.max(parseInt(data.archive_count, 10) || 1, 1), 999)
+            }))
             .sort((a, b) => new Date(b.last_archived) - new Date(a.last_archived));
     },
 
@@ -230,6 +252,8 @@ const App = {
         // Disconnect previous observer if exists
         if (this.scrollObserver) {
             this.scrollObserver.disconnect();
+            // M5: Set observer to null after disconnect to prevent memory leaks
+            this.scrollObserver = null;
         }
 
         const sentinel = document.getElementById('load-more-sentinel');
@@ -287,6 +311,12 @@ const App = {
     renderRepos() {
         Utils.hide(this.elements.reposLoading);
         Utils.hide(this.elements.reposError);
+
+        // M6: Cancel all pending status checks before rendering new repos
+        this.pendingStatusChecks.forEach((abortController, key) => {
+            abortController.abort();
+        });
+        this.pendingStatusChecks.clear();
 
         const allRepos = this.state.filteredRepos;
 
@@ -355,7 +385,7 @@ const App = {
                 </div>
                 ${repo.description ? `<p class="repo-description">${Utils.escapeHtml(repo.description)}</p>` : ''}
                 <div class="repo-meta">
-                    <span title="Archive count">📦 ${repo.archive_count || 1} version${(repo.archive_count || 1) > 1 ? 's' : ''}</span>
+                    <span title="Archive count">📦 ${Math.min(Math.max(repo.archive_count || 1, 1), 999)} version${(repo.archive_count || 1) > 1 ? 's' : ''}</span>
                     <span title="Size">${Utils.formatBytes((repo.latest_size_mb || 0) * 1024 * 1024)}</span>
                     <span title="Last archived">${Utils.formatRelativeTime(repo.last_archived)}</span>
                 </div>
@@ -389,7 +419,9 @@ const App = {
      * Handle search input
      */
     handleSearch(query) {
-        this.state.searchQuery = query.toLowerCase().trim();
+        // L2: Limit search query length to prevent performance issues
+        const limitedQuery = query.slice(0, 200);
+        this.state.searchQuery = limitedQuery.toLowerCase().trim();
         const repos = this.getRepoList();
 
         if (!this.state.searchQuery) {
@@ -531,14 +563,23 @@ const App = {
                 API.fetchReadme(repo.owner, repo.repo)
             ]);
 
+            // H1: Validate URL protocol before rendering
+            let safeUrl = '';
+            try {
+                const urlObj = new URL(repo.url);
+                if (urlObj.protocol === 'https:' && urlObj.hostname === 'github.com') {
+                    safeUrl = Utils.escapeHtml(repo.url);
+                }
+            } catch (e) {
+                console.error('Invalid URL:', repo.url);
+            }
+
             // Render modal content with tabs
             this.elements.modalBody.innerHTML = `
                 <div class="modal-header">
                     <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
                     <p>${Utils.escapeHtml(repo.description || 'No description')}</p>
-                    <p>
-                        <a href="${Utils.escapeHtml(repo.url)}" target="_blank">View on GitHub →</a>
-                    </p>
+                    ${safeUrl ? `<p><a href="${safeUrl}" target="_blank">View on GitHub →</a></p>` : ''}
                 </div>
 
                 <div class="modal-tabs">
@@ -559,10 +600,13 @@ const App = {
                 </div>
             `;
 
-            // Bind tab events
-            this.elements.modalBody.querySelectorAll('.tab-btn').forEach(btn => {
-                btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
-            });
+            // M7: Only bind tab events if data loaded successfully
+            const tabButtons = this.elements.modalBody.querySelectorAll('.tab-btn');
+            if (tabButtons.length > 0) {
+                tabButtons.forEach(btn => {
+                    btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+                });
+            }
         } catch (error) {
             console.error('Error loading modal content:', error);
             this.elements.modalBody.innerHTML = `
@@ -605,13 +649,28 @@ const App = {
         const date = parsed?.date || version.date;
         const archiveName = repo ? `${repo.owner}_${repo.repo}.tar.gz` : (archive?.name || 'archive.tar.gz');
 
+        // H2: Validate download URL starts with https:// before rendering
+        let safeDownloadLink = '';
+        if (archive && archive.download_url) {
+            try {
+                const downloadUrl = new URL(archive.download_url);
+                if (downloadUrl.protocol === 'https:') {
+                    const escapedUrl = Utils.escapeHtml(archive.download_url);
+                    const escapedName = Utils.escapeHtml(archiveName);
+                    safeDownloadLink = `<a href="${escapedUrl}" class="version-download" download="${escapedName}">Download</a>`;
+                }
+            } catch (e) {
+                console.error('Invalid download URL:', archive.download_url);
+            }
+        }
+
         return `
             <div class="version-item">
                 <div class="version-info">
                     <span class="version-date">${Utils.formatDate(date)}</span>
                     <span class="version-meta">${archive ? Utils.formatBytes(archive.size) : 'Unknown size'}</span>
                 </div>
-                ${archive ? `<a href="${archive.download_url}" class="version-download" download="${archiveName}">Download</a>` : ''}
+                ${safeDownloadLink}
             </div>
         `;
     },
@@ -746,7 +805,8 @@ const App = {
             </div>
             ${results.map(r => {
                 const parsed = Utils.parseGitHubUrl(r.url);
-                const displayUrl = parsed ? `${parsed.owner}/${parsed.repo}` : r.url;
+                // H3: Truncate fallback URLs to prevent UI issues
+                const displayUrl = parsed ? `${parsed.owner}/${parsed.repo}` : Utils.truncate(r.url, 100);
                 return `
                 <div class="bulk-result-item">
                     <span class="bulk-result-icon">${r.success ? '✓' : '✗'}</span>
@@ -766,8 +826,16 @@ const App = {
         const statusContainer = cardElement.querySelector('.repo-source-status');
         if (!statusContainer) return;
 
+        // M6: Create AbortController for this status check
+        const checkKey = `${owner}/${repo}`;
+        const abortController = new AbortController();
+        this.pendingStatusChecks.set(checkKey, abortController);
+
         try {
-            const status = await API.checkRepoStatus(owner, repo);
+            const status = await API.checkRepoStatus(owner, repo, abortController.signal);
+
+            // Check if request was aborted
+            if (abortController.signal.aborted) return;
 
             if (status.online === true) {
                 statusContainer.className = 'repo-source-status online';
@@ -780,9 +848,12 @@ const App = {
                 statusContainer.innerHTML = '';
             }
         } catch (error) {
+            if (error.name === 'AbortError') return; // Request was cancelled
             console.error('Failed to check status:', error);
             statusContainer.className = 'repo-source-status';
             statusContainer.innerHTML = '';
+        } finally {
+            this.pendingStatusChecks.delete(checkKey);
         }
     }
 };

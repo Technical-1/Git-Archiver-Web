@@ -10,8 +10,12 @@ const Utils = {
      */
     isValidGitHubUrl(url) {
         if (!url || typeof url !== 'string') return false;
-        const pattern = /^https?:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/?$/;
-        return pattern.test(url.trim());
+        // M3: Check URL length before regex to prevent ReDoS
+        const trimmedUrl = url.trim();
+        if (trimmedUrl.length > 200) return false;
+        // M3: Use length-limited character classes for better performance
+        const pattern = /^https?:\/\/github\.com\/[a-zA-Z0-9_.-]{1,100}\/[a-zA-Z0-9_.-]{1,100}\/?$/;
+        return pattern.test(trimmedUrl);
     },
 
     /**
@@ -94,9 +98,11 @@ const Utils = {
     debounce(func, wait) {
         let timeout;
         return function executedFunction(...args) {
+            // M10: Preserve 'this' context
+            const context = this;
             const later = () => {
                 clearTimeout(timeout);
-                func(...args);
+                func.apply(context, args);
             };
             clearTimeout(timeout);
             timeout = setTimeout(later, wait);
@@ -197,6 +203,12 @@ const Utils = {
                     href = token.href;
                     title = token.title;
                     text = token.text;
+                }
+
+                // M8: Check for dangerous protocols in lowercase before URL parsing
+                const lowerHref = String(href).toLowerCase();
+                if (lowerHref.startsWith('javascript:') || lowerHref.startsWith('data:')) {
+                    return Utils.escapeHtml(text);
                 }
 
                 // Validate URL protocol
@@ -308,7 +320,8 @@ const Toast = {
 
         const msgSpan = document.createElement('span');
         msgSpan.className = 'toast-message';
-        msgSpan.textContent = message;
+        // L1: Use String() to ensure message is always a string with fallback
+        msgSpan.textContent = String(message || 'An error occurred');
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'toast-close';

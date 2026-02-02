@@ -12,7 +12,50 @@ const API = {
         // Cloudflare Worker URL
         WORKER_URL: 'https://git-archiver.btc-treasuries.workers.dev',
         // GitHub API base
-        GITHUB_API: 'https://api.github.com'
+        GITHUB_API: 'https://api.github.com',
+        // M1: Fetch timeout in milliseconds
+        FETCH_TIMEOUT: 30000,
+        // M2: Max response size in bytes (10MB)
+        MAX_RESPONSE_SIZE: 10 * 1024 * 1024
+    },
+
+    /**
+     * M1: Fetch with timeout wrapper using AbortController
+     * @param {string} url - URL to fetch
+     * @param {Object} options - Fetch options
+     * @param {number} timeout - Timeout in milliseconds
+     * @returns {Promise<Response>}
+     */
+    async fetchWithTimeout(url, options = {}, timeout = this.config.FETCH_TIMEOUT) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: options.signal || controller.signal
+            });
+            clearTimeout(timeoutId);
+            return response;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Request timeout');
+            }
+            throw error;
+        }
+    },
+
+    /**
+     * M2: Validate response size before parsing
+     * @param {Response} response
+     * @throws {Error} if response is too large
+     */
+    validateResponseSize(response) {
+        const contentLength = response.headers.get('content-length');
+        if (contentLength && parseInt(contentLength, 10) > this.config.MAX_RESPONSE_SIZE) {
+            throw new Error('Response size exceeds maximum allowed (10MB)');
+        }
     },
 
     /**
@@ -35,13 +78,23 @@ const API = {
      */
     async fetchIndex() {
         try {
-            const response = await fetch(`${this.config.WORKER_URL}/index`);
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(`${this.config.WORKER_URL}/index`);
 
             if (!response.ok) {
                 throw new Error(`Failed to fetch index: ${response.status}`);
             }
 
-            const index = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let index;
+            try {
+                index = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse index JSON: ' + parseError.message);
+            }
 
             if (!this.validateIndex(index)) {
                 console.error('Index validation failed, using empty index');
@@ -62,14 +115,24 @@ const API = {
     async fetchPendingRequests() {
         try {
             const url = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/issues?labels=archive-request&state=open&per_page=20`;
-            const response = await fetch(url);
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(url);
 
             if (!response.ok) {
                 if (response.status === 404) return [];
                 throw new Error(`Failed to fetch issues: ${response.status}`);
             }
 
-            const issues = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let issues;
+            try {
+                issues = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse issues JSON: ' + parseError.message);
+            }
 
             // Parse issue body to extract URL
             return issues.map(issue => {
@@ -99,13 +162,23 @@ const API = {
             // Fetch all releases and filter by tag prefix
             const prefix = `${owner}__${repo}__`;
             const url = `${this.config.GITHUB_API}/repos/${this.config.GITHUB_OWNER}/${this.config.GITHUB_REPO}/releases?per_page=100`;
-            const response = await fetch(url);
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(url);
 
             if (!response.ok) {
                 throw new Error(`Failed to fetch releases: ${response.status}`);
             }
 
-            const releases = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let releases;
+            try {
+                releases = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse releases JSON: ' + parseError.message);
+            }
 
             // Filter releases for this repo
             return releases
@@ -139,10 +212,20 @@ const API = {
                 url += `&tag=${encodeURIComponent(tag)}`;
             }
 
-            const response = await fetch(url);
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(url);
             if (!response.ok) return null;
 
-            const data = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse README JSON: ' + parseError.message);
+            }
             return data.readme;
         } catch (error) {
             console.error('Error fetching README:', error);
@@ -154,19 +237,30 @@ const API = {
      * Check if original repository is online/offline
      * @param {string} owner - Repo owner
      * @param {string} repo - Repo name
+     * @param {AbortSignal} signal - Optional abort signal for cancellation
      * @returns {Promise<Object>}
      */
-    async checkRepoStatus(owner, repo) {
+    async checkRepoStatus(owner, repo, signal = null) {
         try {
             const url = `${this.config.WORKER_URL}/status?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`;
-            const response = await fetch(url);
+            // M1: Use fetch with timeout, pass signal if provided
+            const response = await this.fetchWithTimeout(url, signal ? { signal } : {});
 
             if (!response.ok) {
                 return { online: null, status: 'error', message: 'Failed to check status' };
             }
 
-            return await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            try {
+                return await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse status JSON: ' + parseError.message);
+            }
         } catch (error) {
+            if (error.name === 'AbortError') throw error; // Re-throw abort errors
             console.error('Error checking repo status:', error);
             return { online: null, status: 'error', message: 'Failed to check status' };
         }
@@ -179,7 +273,8 @@ const API = {
      */
     async bulkSubmit(urls) {
         try {
-            const response = await fetch(`${this.config.WORKER_URL}/bulk-submit`, {
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(`${this.config.WORKER_URL}/bulk-submit`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -187,7 +282,16 @@ const API = {
                 body: JSON.stringify({ urls })
             });
 
-            const data = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse bulk submit response: ' + parseError.message);
+            }
 
             if (!response.ok && !data.results) {
                 throw new Error(data.error || 'Bulk submission failed');
@@ -207,7 +311,8 @@ const API = {
      */
     async submitUrl(url) {
         try {
-            const response = await fetch(`${this.config.WORKER_URL}/submit`, {
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(`${this.config.WORKER_URL}/submit`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -215,7 +320,16 @@ const API = {
                 body: JSON.stringify({ url })
             });
 
-            const data = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse submit response: ' + parseError.message);
+            }
 
             if (!response.ok) {
                 throw new Error(data.error || 'Submission failed');
@@ -237,14 +351,25 @@ const API = {
     async checkRepository(owner, repo) {
         try {
             const url = `${this.config.GITHUB_API}/repos/${owner}/${repo}`;
-            const response = await fetch(url);
+            // M1: Use fetch with timeout
+            const response = await this.fetchWithTimeout(url);
 
             if (!response.ok) {
                 if (response.status === 404) return null;
                 throw new Error(`GitHub API error: ${response.status}`);
             }
 
-            const data = await response.json();
+            // M2: Validate response size
+            this.validateResponseSize(response);
+
+            // M9: Wrap JSON parsing with try-catch
+            let data;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                throw new Error('Failed to parse repository JSON: ' + parseError.message);
+            }
+
             return {
                 exists: true,
                 description: data.description,

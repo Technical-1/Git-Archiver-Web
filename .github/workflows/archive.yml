@@ -29,6 +29,11 @@ jobs:
       (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'archive-request')) ||
       github.event_name == 'workflow_dispatch'
 
+    # Prevent race conditions in index updates
+    concurrency:
+      group: index-update-global
+      cancel-in-progress: false
+
     steps:
       - name: Setup retry function
         run: |
@@ -52,22 +57,39 @@ jobs:
 
       - name: Parse repository URL
         id: parse
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          INPUT_URL: ${{ github.event.inputs.url }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            URL="${{ github.event.inputs.url }}"
+          if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+            URL="$INPUT_URL"
           else
-            # Extract URL from issue body
-            URL=$(echo "${{ github.event.issue.body }}" | grep -oP 'url:\s*\K(https://github\.com/[^\s]+)' | head -1)
+            # Extract URL from issue body (safely using env var)
+            URL=$(echo "$ISSUE_BODY" | grep -oP 'url:\s*\K(https://github\.com/[^\s]+)' | head -1)
+          fi
+
+          # Validate URL format strictly - only allow safe characters
+          if ! [[ "$URL" =~ ^https://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/?$ ]]; then
+            echo "Invalid URL format: $URL"
+            echo "valid=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
           echo "url=$URL" >> $GITHUB_OUTPUT
 
           # Parse owner and repo
-          if [[ $URL =~ github\.com/([^/]+)/([^/]+) ]]; then
+          if [[ "$URL" =~ github\.com/([^/]+)/([^/]+) ]]; then
             OWNER="${BASH_REMATCH[1]}"
             REPO="${BASH_REMATCH[2]}"
             REPO="${REPO%.git}"
             REPO="${REPO%/}"
+
+            # Sanitize owner and repo to prevent path traversal
+            OWNER="${OWNER//\//_}"
+            OWNER="${OWNER//../_}"
+            REPO="${REPO//\//_}"
+            REPO="${REPO//../_}"
 
             echo "owner=$OWNER" >> $GITHUB_OUTPUT
             echo "repo=$REPO" >> $GITHUB_OUTPUT
@@ -161,7 +183,7 @@ jobs:
 
           echo "Cloning $URL with $DEPTH..."
 
-          timeout 540 git clone $DEPTH "$URL" repo || {
+          timeout 540 git clone "$DEPTH" "$URL" repo || {
             echo "Clone failed or timed out"
             exit 1
           }
@@ -192,6 +214,12 @@ jobs:
           ARCHIVE_SIZE=$(stat -f%z "$ARCHIVE_NAME" 2>/dev/null || stat -c%s "$ARCHIVE_NAME")
           ARCHIVE_SIZE_MB=$((ARCHIVE_SIZE / 1024 / 1024))
           echo "Archive size: ${ARCHIVE_SIZE_MB}MB"
+
+          # Check compressed archive size limit (1000MB)
+          if [ "$ARCHIVE_SIZE_MB" -gt 1000 ]; then
+            echo "ERROR: Compressed archive too large: ${ARCHIVE_SIZE_MB}MB (limit: 1000MB)"
+            exit 1
+          fi
 
           # Calculate archive hash for deduplication
           ARCHIVE_HASH=$(sha256sum "$ARCHIVE_NAME" | cut -d' ' -f1)
@@ -660,6 +688,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup on failure
-        if: failure()
+        if: failure() || cancelled()
         run: |
           rm -rf repo *.tar.gz index*.json

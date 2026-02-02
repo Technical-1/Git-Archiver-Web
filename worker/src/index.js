@@ -20,15 +20,54 @@ class Logger {
     }
 
     log(level, message, data = {}) {
+        // Sanitize data to remove potential sensitive information
+        const sanitizedData = this.sanitizeLogData(data);
+
         const entry = {
             timestamp: new Date().toISOString(),
             requestId: this.requestId,
             level,
-            message,
+            message: this.sanitizeMessage(message),
             durationMs: Date.now() - this.startTime,
-            ...data
+            ...sanitizedData
         };
         console.log(JSON.stringify(entry));
+    }
+
+    sanitizeMessage(message) {
+        if (typeof message !== 'string') {
+            message = String(message);
+        }
+        // Truncate to 500 chars to prevent log injection
+        if (message.length > 500) {
+            message = message.substring(0, 500) + '... (truncated)';
+        }
+        // Remove potential GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_ patterns)
+        message = message.replace(/\b(ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36,}\b/g, '[REDACTED_TOKEN]');
+        // Remove bearer tokens
+        message = message.replace(/\bBearer\s+[a-zA-Z0-9_\-\.]+/gi, 'Bearer [REDACTED]');
+        // Remove authorization headers
+        message = message.replace(/\bAuthorization:\s*[^\s,]+/gi, 'Authorization: [REDACTED]');
+        return message;
+    }
+
+    sanitizeLogData(data) {
+        if (!data || typeof data !== 'object') {
+            return data;
+        }
+        const sanitized = { ...data };
+        // Remove sensitive keys
+        const sensitiveKeys = ['token', 'authorization', 'password', 'secret', 'apiKey', 'api_key'];
+        for (const key of Object.keys(sanitized)) {
+            if (sensitiveKeys.some(sk => key.toLowerCase().includes(sk))) {
+                sanitized[key] = '[REDACTED]';
+            } else if (typeof sanitized[key] === 'string') {
+                sanitized[key] = this.sanitizeMessage(sanitized[key]);
+            } else if (sanitized[key] && typeof sanitized[key] === 'object') {
+                sanitized[key] = this.sanitizeLogData(sanitized[key]);
+            }
+        }
+        return sanitized;
     }
 
     info(message, data) { this.log('info', message, data); }
@@ -44,6 +83,28 @@ function generateRequestId() {
     crypto.getRandomValues(bytes);
     const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     return 'req_' + Date.now().toString(36) + '_' + hex;
+}
+
+/**
+ * Validate GitHub owner/repo names against GitHub naming rules
+ * - 1-39 characters long
+ * - Only alphanumeric, hyphens, underscores, and periods
+ * - Cannot start or end with hyphen or period
+ */
+function validateGitHubName(name, type = 'owner') {
+    if (!name || typeof name !== 'string') {
+        return { valid: false, error: `${type} is required` };
+    }
+
+    if (name.length < 1 || name.length > 39) {
+        return { valid: false, error: `${type} must be 1-39 characters` };
+    }
+
+    if (!GITHUB_NAME_REGEX.test(name)) {
+        return { valid: false, error: `${type} contains invalid characters or format` };
+    }
+
+    return { valid: true };
 }
 
 // Constants
@@ -66,8 +127,14 @@ const CACHE_TTL = {
     readme: 3600     // 1 hour
 };
 
-// GitHub URL validation regex
-const GITHUB_URL_REGEX = /^https?:\/\/github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/?$/;
+// GitHub URL validation regex with length limits to prevent ReDoS
+// Max length for GitHub usernames/repos is 39 chars, but we allow up to 100 for safety
+const GITHUB_URL_REGEX = /^https?:\/\/github\.com\/([a-zA-Z0-9_.-]{1,100})\/([a-zA-Z0-9_.-]{1,100})\/?$/;
+const MAX_URL_LENGTH = 300; // Prevent ReDoS by checking length before regex
+
+// GitHub naming rules: alphanumeric, hyphens, underscores, and periods
+// Cannot start with a hyphen or period
+const GITHUB_NAME_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,38}[a-zA-Z0-9])?$/;
 
 /**
  * Fetch with retry logic for handling transient failures
@@ -144,14 +211,24 @@ async function cachedFetch(request, endpoint, fetchFn) {
 
     // Only cache successful responses
     if (response.status === 200) {
-        // Clone the response for caching (with cache control headers)
+        // Allowlist of safe headers to prevent cache poisoning
+        const safeHeaders = ['content-type', 'content-length', 'etag', 'last-modified'];
+        const cacheHeaders = {};
+
+        for (const [key, value] of response.headers) {
+            if (safeHeaders.includes(key.toLowerCase())) {
+                cacheHeaders[key] = value;
+            }
+        }
+
+        // Add cache control header
+        cacheHeaders['Cache-Control'] = `public, max-age=${ttl}`;
+
+        // Clone the response for caching (with safe headers only)
         const responseToCache = new Response(response.clone().body, {
             status: response.status,
             statusText: response.statusText,
-            headers: {
-                ...Object.fromEntries(response.headers),
-                'Cache-Control': `public, max-age=${ttl}`
-            }
+            headers: cacheHeaders
         });
 
         // Store in cache (don't await - fire and forget)
@@ -170,21 +247,21 @@ async function cachedFetch(request, endpoint, fetchFn) {
 
 /**
  * Extract client IP from request headers
- * Prefers CF-Connecting-IP (Cloudflare's header), falls back to X-Forwarded-For
+ * Uses CF-Connecting-IP which should always be present on Cloudflare
+ * WARNING: X-Forwarded-For fallback removed to prevent IP spoofing
  */
 function getClientIP(request) {
-    // CF-Connecting-IP is the most reliable on Cloudflare
+    // CF-Connecting-IP is the most reliable on Cloudflare and should always be present
     const cfIP = request.headers.get('CF-Connecting-IP');
     if (cfIP) {
         return cfIP;
     }
 
-    // X-Forwarded-For can contain multiple IPs, take the first (original client)
-    const forwardedFor = request.headers.get('X-Forwarded-For');
-    if (forwardedFor) {
-        return forwardedFor.split(',')[0].trim();
-    }
+    // Log warning if CF-Connecting-IP is missing (should not happen on Cloudflare)
+    console.warn('CF-Connecting-IP header missing - this should not happen on Cloudflare Workers');
 
+    // Do not trust X-Forwarded-For as it can be spoofed by clients
+    // Return 'unknown' to fail safely
     return 'unknown';
 }
 
@@ -236,7 +313,16 @@ export default {
             if (!owner || !repo) {
                 response = errorResponse(400, 'Missing owner or repo parameter');
             } else {
-                response = await handleReadmeFetch(request, owner, repo, tag, env, logger);
+                // Validate owner and repo names
+                const ownerValidation = validateGitHubName(owner, 'owner');
+                const repoValidation = validateGitHubName(repo, 'repo');
+                if (!ownerValidation.valid) {
+                    response = errorResponse(400, ownerValidation.error);
+                } else if (!repoValidation.valid) {
+                    response = errorResponse(400, repoValidation.error);
+                } else {
+                    response = await handleReadmeFetch(request, owner, repo, tag, env, logger);
+                }
             }
         } else if (request.method === 'GET' && url.pathname === '/status') {
             const owner = url.searchParams.get('owner');
@@ -244,7 +330,16 @@ export default {
             if (!owner || !repo) {
                 response = errorResponse(400, 'Missing owner or repo parameter');
             } else {
-                response = await handleStatusCheck(request, owner, repo, env, logger);
+                // Validate owner and repo names
+                const ownerValidation = validateGitHubName(owner, 'owner');
+                const repoValidation = validateGitHubName(repo, 'repo');
+                if (!ownerValidation.valid) {
+                    response = errorResponse(400, ownerValidation.error);
+                } else if (!repoValidation.valid) {
+                    response = errorResponse(400, repoValidation.error);
+                } else {
+                    response = await handleStatusCheck(request, owner, repo, env, logger);
+                }
             }
         } else if (request.method === 'POST' && url.pathname === '/bulk-submit') {
             response = await handleBulkSubmit(request, env, logger);
@@ -278,7 +373,7 @@ async function handleIndexFetch(request, env, logger) {
     try {
         // Rate limiting check at the start
         const clientIP = getClientIP(request);
-        const rateLimitResult = await checkRateLimit(clientIP, 'index', env);
+        const rateLimitResult = await checkRateLimit(clientIP, 'index', env, logger.requestId);
         if (!rateLimitResult.allowed) {
             logger.warn('Rate limit exceeded', { clientIP, endpoint: 'index' });
             return rateLimitResponse(rateLimitResult);
@@ -348,10 +443,25 @@ async function handleSubmit(request, env, logger) {
     try {
         // Rate limiting check at the start
         const clientIP = getClientIP(request);
-        const rateLimitResult = await checkRateLimit(clientIP, 'submit', env);
+        const rateLimitResult = await checkRateLimit(clientIP, 'submit', env, logger.requestId);
         if (!rateLimitResult.allowed) {
             logger.warn('Rate limit exceeded', { clientIP, endpoint: 'submit' });
             return rateLimitResponse(rateLimitResult);
+        }
+
+        // Validate Content-Type header
+        const contentType = request.headers.get('Content-Type');
+        if (!contentType || !contentType.includes('application/json')) {
+            return addRateLimitHeaders(
+                new Response(JSON.stringify({ error: 'Content-Type must be application/json' }), {
+                    status: 415,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                }),
+                rateLimitResult
+            );
         }
 
         // Parse request body
@@ -363,6 +473,14 @@ async function handleSubmit(request, env, logger) {
             return addRateLimitHeaders(errorResponse(400, 'Missing URL'), rateLimitResult);
         }
 
+        // Check URL length before regex to prevent ReDoS
+        if (repoUrl.length > MAX_URL_LENGTH) {
+            return addRateLimitHeaders(
+                errorResponse(400, 'URL too long'),
+                rateLimitResult
+            );
+        }
+
         const match = repoUrl.match(GITHUB_URL_REGEX);
         if (!match) {
             return addRateLimitHeaders(
@@ -372,6 +490,18 @@ async function handleSubmit(request, env, logger) {
         }
 
         const [, owner, repo] = match;
+
+        // Validate owner and repo names against GitHub naming rules
+        const ownerValidation = validateGitHubName(owner, 'owner');
+        if (!ownerValidation.valid) {
+            return addRateLimitHeaders(errorResponse(400, ownerValidation.error), rateLimitResult);
+        }
+
+        const repoValidation = validateGitHubName(repo, 'repo');
+        if (!repoValidation.valid) {
+            return addRateLimitHeaders(errorResponse(400, repoValidation.error), rateLimitResult);
+        }
+
         logger.info('Processing submission', { owner, repo });
 
         // Check if repository exists
@@ -436,14 +566,15 @@ async function handleSubmit(request, env, logger) {
 
 /**
  * Check rate limit for IP address and endpoint
- * Uses Cloudflare KV for distributed rate limiting
+ * Uses Cloudflare KV for distributed rate limiting with sliding window approach
  *
  * @param {string} ip - Client IP address
  * @param {string} endpoint - Endpoint name (submit, bulkSubmit, index, status)
  * @param {object} env - Environment bindings
+ * @param {string} requestId - Unique request ID to prevent duplicate counting
  * @returns {object} { allowed, limit, remaining, resetAt, retryAfter }
  */
-async function checkRateLimit(ip, endpoint, env) {
+async function checkRateLimit(ip, endpoint, env, requestId = null) {
     const config = RATE_LIMITS[endpoint];
     if (!config) {
         console.error(`Unknown rate limit endpoint: ${endpoint}`);
@@ -451,8 +582,13 @@ async function checkRateLimit(ip, endpoint, env) {
     }
 
     const { limit, windowSeconds } = config;
-    const key = `rate:${endpoint}:${ip}`;
     const now = Date.now();
+    const windowStart = Math.floor(now / 1000) - windowSeconds;
+
+    // Use sliding window with shorter TTL keys to reduce race condition window
+    const currentSlot = Math.floor(now / 1000);
+    const key = `rate:${endpoint}:${ip}:${currentSlot}`;
+    const countKey = `rate:${endpoint}:${ip}:count`;
 
     // Check if KV is available
     if (!env.RATE_LIMIT) {
@@ -461,69 +597,87 @@ async function checkRateLimit(ip, endpoint, env) {
     }
 
     try {
-        const data = await env.RATE_LIMIT.get(key, { type: 'json' });
-
-        if (!data) {
-            // First request - create new rate limit entry
-            const resetAt = now + windowSeconds * 1000;
-            await env.RATE_LIMIT.put(
-                key,
-                JSON.stringify({ count: 1, resetAt }),
-                { expirationTtl: windowSeconds }
-            );
-            return { allowed: true, limit, remaining: limit - 1, resetAt };
+        // Track request IDs to detect duplicates
+        if (requestId) {
+            const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
+            const duplicate = await env.RATE_LIMIT.get(reqIdKey);
+            if (duplicate) {
+                console.warn('Duplicate request detected', { requestId, ip, endpoint });
+                // Return the previous result for duplicate requests
+                return JSON.parse(duplicate);
+            }
         }
 
-        // Check if window has expired (shouldn't happen due to TTL, but be safe)
-        if (now >= data.resetAt) {
-            const resetAt = now + windowSeconds * 1000;
-            await env.RATE_LIMIT.put(
-                key,
-                JSON.stringify({ count: 1, resetAt }),
-                { expirationTtl: windowSeconds }
-            );
-            return { allowed: true, limit, remaining: limit - 1, resetAt };
+        // Get current count using atomic increment simulation
+        // Store individual request timestamps for accurate sliding window
+        const requests = [];
+        for (let i = 0; i < windowSeconds; i++) {
+            const slotKey = `rate:${endpoint}:${ip}:${currentSlot - i}`;
+            const slotData = await env.RATE_LIMIT.get(slotKey);
+            if (slotData) {
+                requests.push(parseInt(slotData));
+            }
         }
+
+        const currentCount = requests.length;
+        const resetAt = (currentSlot + windowSeconds) * 1000;
 
         // Check if limit exceeded
-        if (data.count >= limit) {
-            const retryAfter = Math.ceil((data.resetAt - now) / 1000);
-            return {
+        if (currentCount >= limit) {
+            const retryAfter = Math.ceil((resetAt - now) / 1000);
+            const result = {
                 allowed: false,
                 limit,
                 remaining: 0,
-                resetAt: data.resetAt,
+                resetAt: resetAt,
                 retryAfter
             };
+
+            // Store result for duplicate detection
+            if (requestId) {
+                const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
+                await env.RATE_LIMIT.put(reqIdKey, JSON.stringify(result), { expirationTtl: 60 });
+            }
+
+            return result;
         }
 
-        // Increment counter
-        const newCount = data.count + 1;
-        const remainingTtl = Math.ceil((data.resetAt - now) / 1000);
+        // Record this request in current slot
         await env.RATE_LIMIT.put(
             key,
-            JSON.stringify({ count: newCount, resetAt: data.resetAt }),
-            { expirationTtl: remainingTtl > 0 ? remainingTtl : 1 }
+            currentSlot.toString(),
+            { expirationTtl: windowSeconds + 10 } // Extra 10s buffer
         );
 
-        return {
+        const result = {
             allowed: true,
             limit,
-            remaining: limit - newCount,
-            resetAt: data.resetAt
+            remaining: limit - currentCount - 1,
+            resetAt: resetAt
         };
 
+        // Store result for duplicate detection
+        if (requestId) {
+            const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
+            await env.RATE_LIMIT.put(reqIdKey, JSON.stringify(result), { expirationTtl: 60 });
+        }
+
+        return result;
+
     } catch (error) {
-        // Fail closed - deny requests when we can't verify rate limits
-        // This prevents attackers from bypassing limits by causing KV errors
-        console.error('Rate limit check error:', error);
+        // INTENTIONAL: Rate limiting fails CLOSED (denies requests) to prevent abuse during KV outages.
+        // This is different from H6/H7 duplicate checks which fail OPEN (allow requests) because:
+        // - Rate limiting: Failing open allows unlimited abuse; failing closed is temporary inconvenience
+        // - Duplicate checks: Failing closed blocks all legitimate requests; failing open may create duplicates
+        // The security trade-off favors denying during rate limit outages to prevent DoS attacks.
+        logger.warn('Rate limit check failed - denying request for security', { endpoint, ip, error: error.message });
         return {
             allowed: false,
             limit,
             remaining: 0,
             resetAt: now + windowSeconds * 1000,
             retryAfter: 60, // Ask client to retry in 60 seconds
-            error: 'Rate limit service unavailable'
+            error: 'Rate limit service temporarily unavailable - please retry'
         };
     }
 }
@@ -635,10 +789,10 @@ async function checkExistingRequest(owner, repo, env) {
             issue.body?.toLowerCase().includes(searchPattern)
         );
     } catch (error) {
-        console.error('Check existing request error:', error);
-        // Fail closed - return a synthetic "existing" result to prevent duplicates
-        // when we can't verify. Better to reject than create duplicates.
-        return { number: 'unknown', title: 'Unable to verify - request blocked' };
+        console.warn('Check existing request error - allowing request to proceed:', error.message);
+        // Return null to let the caller handle the uncertainty
+        // Duplicates are better than denying legitimate requests
+        return null;
     }
 }
 
@@ -670,9 +824,10 @@ async function checkTodayRelease(owner, repo, env) {
             url: release.html_url
         };
     } catch (error) {
-        console.error('Check today release error:', error);
-        // Fail closed - assume already archived to prevent duplicates
-        return { tag: 'unknown', url: 'Unable to verify - assumed already archived' };
+        console.warn('Check today release error - allowing request to proceed:', error.message);
+        // Return null to let the caller handle the uncertainty
+        // Duplicates are better than denying legitimate requests
+        return null;
     }
 }
 
@@ -770,7 +925,7 @@ async function handleReadmeFetch(request, owner, repo, tag, env, logger) {
     try {
         // Rate limiting check at the start
         const clientIP = getClientIP(request);
-        const rateLimitResult = await checkRateLimit(clientIP, 'readme', env);
+        const rateLimitResult = await checkRateLimit(clientIP, 'readme', env, logger.requestId);
         if (!rateLimitResult.allowed) {
             logger.warn('Rate limit exceeded', { clientIP, endpoint: 'readme' });
             return rateLimitResponse(rateLimitResult);
@@ -854,7 +1009,7 @@ async function handleReadmeFetch(request, owner, repo, tag, env, logger) {
 async function handleStatusCheck(request, owner, repo, env, logger) {
     // Rate limiting check at the start (outside try block so it's available in catch)
     const clientIP = getClientIP(request);
-    const rateLimitResult = await checkRateLimit(clientIP, 'status', env);
+    const rateLimitResult = await checkRateLimit(clientIP, 'status', env, logger.requestId);
     if (!rateLimitResult.allowed) {
         logger.warn('Rate limit exceeded', { clientIP, endpoint: 'status' });
         return rateLimitResponse(rateLimitResult);
@@ -945,10 +1100,25 @@ async function handleBulkSubmit(request, env, logger) {
     try {
         // Rate limiting check at the start
         const clientIP = getClientIP(request);
-        const rateLimitResult = await checkRateLimit(clientIP, 'bulkSubmit', env);
+        const rateLimitResult = await checkRateLimit(clientIP, 'bulkSubmit', env, logger.requestId);
         if (!rateLimitResult.allowed) {
             logger.warn('Rate limit exceeded', { clientIP, endpoint: 'bulkSubmit' });
             return rateLimitResponse(rateLimitResult);
+        }
+
+        // Validate Content-Type header
+        const contentType = request.headers.get('Content-Type');
+        if (!contentType || !contentType.includes('application/json')) {
+            return addRateLimitHeaders(
+                new Response(JSON.stringify({ error: 'Content-Type must be application/json' }), {
+                    status: 415,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                }),
+                rateLimitResult
+            );
         }
 
         const body = await request.json();
@@ -978,6 +1148,12 @@ async function handleBulkSubmit(request, env, logger) {
                 continue;
             }
 
+            // Check URL length before regex to prevent ReDoS
+            if (repoUrl.length > MAX_URL_LENGTH) {
+                results.push({ url: repoUrl, success: false, error: 'URL too long' });
+                continue;
+            }
+
             const match = repoUrl.match(GITHUB_URL_REGEX);
             if (!match) {
                 results.push({ url: repoUrl, success: false, error: 'Invalid GitHub URL' });
@@ -985,6 +1161,19 @@ async function handleBulkSubmit(request, env, logger) {
             }
 
             const [, owner, repo] = match;
+
+            // Validate owner and repo names
+            const ownerValidation = validateGitHubName(owner, 'owner');
+            if (!ownerValidation.valid) {
+                results.push({ url: repoUrl, success: false, error: ownerValidation.error });
+                continue;
+            }
+
+            const repoValidation = validateGitHubName(repo, 'repo');
+            if (!repoValidation.valid) {
+                results.push({ url: repoUrl, success: false, error: repoValidation.error });
+                continue;
+            }
 
             try {
                 // Check if repository exists

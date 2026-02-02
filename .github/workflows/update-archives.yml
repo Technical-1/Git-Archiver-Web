@@ -45,6 +45,17 @@ jobs:
         run: |
           MAX_REPOS="${{ github.event.inputs.max_repos || '10' }}"
 
+          # Validate max_repos is a number between 1-50
+          if ! [[ "$MAX_REPOS" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: max_repos must be a number, got: $MAX_REPOS"
+            exit 1
+          fi
+
+          if [ "$MAX_REPOS" -lt 1 ] || [ "$MAX_REPOS" -gt 50 ]; then
+            echo "ERROR: max_repos must be between 1 and 50, got: $MAX_REPOS"
+            exit 1
+          fi
+
           # Get all active repos, sorted by last_archived (oldest first)
           # Hash comparison in archive workflow prevents duplicate releases
           jq -r '
@@ -75,8 +86,11 @@ jobs:
             # Extract owner/repo from URL
             REPO_PATH=$(echo "$REPO_URL" | sed 's|https://github.com/||')
 
+            # Escape special regex characters in REPO_PATH for safe searching (including ] and \)
+            REPO_PATH_ESCAPED=$(echo "$REPO_PATH" | sed 's/[\\.[*^$()+?{|]/\\&/g' | sed 's/]/\\]/g')
+
             # Check if there's already an open issue for this repo
-            EXISTING=$(gh issue list --label "archive-request" --state open --search "$REPO_PATH" --json number --jq '.[0].number // empty')
+            EXISTING=$(gh issue list --label "archive-request" --state open --search "$REPO_PATH_ESCAPED" --json number --jq '.[0].number // empty')
 
             if [ -n "$EXISTING" ]; then
               echo "Skipping - already has open issue #$EXISTING"
