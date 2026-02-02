@@ -183,7 +183,8 @@ jobs:
 
           echo "Cloning $URL with $DEPTH..."
 
-          timeout 540 git clone "$DEPTH" "$URL" repo || {
+          # Note: $DEPTH is intentionally unquoted to allow word splitting of "--depth N"
+          timeout 540 git clone $DEPTH "$URL" repo || {
             echo "Clone failed or timed out"
             exit 1
           }
