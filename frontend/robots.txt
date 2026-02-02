@@ -1,0 +1,11 @@
+# Git-Archiver Web - robots.txt
+# https://technical-1.github.io/Git-Archiver-Web/
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://technical-1.github.io/Git-Archiver-Web/sitemap.xml
+
+# Crawl-delay for polite crawling
+Crawl-delay: 1
