@@ -13,7 +13,7 @@ compatibility_date = "2024-01-01"
 # 3. The worker will fail-closed (reject all requests) if KV is unavailable
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "2c10cf8e59ca4d4bbe141128201f1a5c"
 
 # Environment variables (set via wrangler secret)
 # Run: wrangler secret put GITHUB_TOKEN
