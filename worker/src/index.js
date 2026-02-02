@@ -566,12 +566,12 @@ async function handleSubmit(request, env, logger) {
 
 /**
  * Check rate limit for IP address and endpoint
- * Uses Cloudflare KV for distributed rate limiting with sliding window approach
+ * Uses Cloudflare KV for distributed rate limiting with fixed window approach
  *
  * @param {string} ip - Client IP address
  * @param {string} endpoint - Endpoint name (submit, bulkSubmit, index, status)
  * @param {object} env - Environment bindings
- * @param {string} requestId - Unique request ID to prevent duplicate counting
+ * @param {string} requestId - Unique request ID (unused, kept for API compatibility)
  * @returns {object} { allowed, limit, remaining, resetAt, retryAfter }
  */
 async function checkRateLimit(ip, endpoint, env, requestId = null) {
@@ -583,86 +583,48 @@ async function checkRateLimit(ip, endpoint, env, requestId = null) {
 
     const { limit, windowSeconds } = config;
     const now = Date.now();
-    const windowStart = Math.floor(now / 1000) - windowSeconds;
 
-    // Use sliding window with shorter TTL keys to reduce race condition window
-    const currentSlot = Math.floor(now / 1000);
-    const key = `rate:${endpoint}:${ip}:${currentSlot}`;
-    const countKey = `rate:${endpoint}:${ip}:count`;
+    // Use fixed window based on time period (simpler and faster than sliding window)
+    // Window aligns to start of period (e.g., top of the hour for hourly limits)
+    const windowId = Math.floor(now / (windowSeconds * 1000));
+    const key = `rate:${endpoint}:${ip}:${windowId}`;
+    const resetAt = (windowId + 1) * windowSeconds * 1000;
 
     // Check if KV is available
     if (!env.RATE_LIMIT) {
         console.warn('RATE_LIMIT KV namespace not configured, allowing request');
-        return { allowed: true, limit, remaining: limit, resetAt: now + windowSeconds * 1000 };
+        return { allowed: true, limit, remaining: limit, resetAt };
     }
 
     try {
-        // Track request IDs to detect duplicates
-        if (requestId) {
-            const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
-            const duplicate = await env.RATE_LIMIT.get(reqIdKey);
-            if (duplicate) {
-                console.warn('Duplicate request detected', { requestId, ip, endpoint });
-                // Return the previous result for duplicate requests
-                return JSON.parse(duplicate);
-            }
-        }
-
-        // Get current count using atomic increment simulation
-        // Store individual request timestamps for accurate sliding window
-        const requests = [];
-        for (let i = 0; i < windowSeconds; i++) {
-            const slotKey = `rate:${endpoint}:${ip}:${currentSlot - i}`;
-            const slotData = await env.RATE_LIMIT.get(slotKey);
-            if (slotData) {
-                requests.push(parseInt(slotData));
-            }
-        }
-
-        const currentCount = requests.length;
-        const resetAt = (currentSlot + windowSeconds) * 1000;
+        // Get current count for this window
+        const data = await env.RATE_LIMIT.get(key, { type: 'json' });
+        const currentCount = data?.count || 0;
 
         // Check if limit exceeded
         if (currentCount >= limit) {
             const retryAfter = Math.ceil((resetAt - now) / 1000);
-            const result = {
+            return {
                 allowed: false,
                 limit,
                 remaining: 0,
-                resetAt: resetAt,
+                resetAt,
                 retryAfter
             };
-
-            // Store result for duplicate detection
-            if (requestId) {
-                const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
-                await env.RATE_LIMIT.put(reqIdKey, JSON.stringify(result), { expirationTtl: 60 });
-            }
-
-            return result;
         }
 
-        // Record this request in current slot
-        await env.RATE_LIMIT.put(
-            key,
-            currentSlot.toString(),
-            { expirationTtl: windowSeconds + 10 } // Extra 10s buffer
-        );
+        // Increment counter (small race window acceptable for rate limiting)
+        const newCount = currentCount + 1;
+        await env.RATE_LIMIT.put(key, JSON.stringify({ count: newCount, lastUpdated: now }), {
+            expirationTtl: windowSeconds + 60 // Window duration + 1 minute buffer
+        });
 
-        const result = {
+        return {
             allowed: true,
             limit,
-            remaining: limit - currentCount - 1,
-            resetAt: resetAt
+            remaining: limit - newCount,
+            resetAt
         };
-
-        // Store result for duplicate detection
-        if (requestId) {
-            const reqIdKey = `rate:${endpoint}:${ip}:reqid:${requestId}`;
-            await env.RATE_LIMIT.put(reqIdKey, JSON.stringify(result), { expirationTtl: 60 });
-        }
-
-        return result;
 
     } catch (error) {
         // INTENTIONAL: Rate limiting fails CLOSED (denies requests) to prevent abuse during KV outages.
@@ -670,13 +632,13 @@ async function checkRateLimit(ip, endpoint, env, requestId = null) {
         // - Rate limiting: Failing open allows unlimited abuse; failing closed is temporary inconvenience
         // - Duplicate checks: Failing closed blocks all legitimate requests; failing open may create duplicates
         // The security trade-off favors denying during rate limit outages to prevent DoS attacks.
-        logger.warn('Rate limit check failed - denying request for security', { endpoint, ip, error: error.message });
+        console.warn('Rate limit check failed - denying request for security', { endpoint, ip, error: error.message });
         return {
             allowed: false,
             limit,
             remaining: 0,
             resetAt: now + windowSeconds * 1000,
-            retryAfter: 60, // Ask client to retry in 60 seconds
+            retryAfter: 60,
             error: 'Rate limit service temporarily unavailable - please retry'
         };
     }
