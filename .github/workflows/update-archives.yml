@@ -30,11 +30,12 @@ jobs:
         run: |
           INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
 
-          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ]; then
+          # Download and validate that it's actually valid JSON (not a 404 HTML page)
+          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ] && jq -e '.' index.json >/dev/null 2>&1; then
             echo "Downloaded index with $(jq '.total_repos' index.json) repositories"
             echo "has_index=true" >> $GITHUB_OUTPUT
           else
-            echo "No index found"
+            echo "No valid index found (missing or invalid JSON)"
             echo "has_index=false" >> $GITHUB_OUTPUT
           fi
 

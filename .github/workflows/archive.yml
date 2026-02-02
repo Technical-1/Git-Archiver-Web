@@ -290,9 +290,11 @@ jobs:
           # Download existing index or create new one
           INDEX_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
 
-          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ]; then
-            echo "Downloaded existing index"
+          # Download and validate that it's actually valid JSON
+          if curl -sL -o index.json "$INDEX_URL" && [ -s index.json ] && jq -e '.' index.json >/dev/null 2>&1; then
+            echo "Downloaded existing index with $(jq '.total_repos' index.json) repositories"
           else
+            echo "No valid index found - creating new one"
             echo '{"repositories": {}, "total_repos": 0, "total_size_mb": 0, "last_updated": ""}' > index.json
           fi
 
