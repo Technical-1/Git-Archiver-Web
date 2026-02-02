@@ -70,7 +70,7 @@ const App = {
             this.renderQueue();
             this.updateStats();
         } catch (error) {
-            console.error('Failed to refresh queue:', error);
+            Logger.error('Failed to refresh queue:', error);
         } finally {
             const btn = this.elements.queueRefreshBtn;
             if (btn) btn.classList.remove('spinning');
@@ -195,7 +195,7 @@ const App = {
             this.renderRepos();
             this.renderQueue();
         } catch (error) {
-            console.error('Failed to load data:', error);
+            Logger.error('Failed to load data:', error);
             this.showError();
         } finally {
             this.state.isLoading = false;
@@ -537,7 +537,7 @@ const App = {
     async openRepoModal(repo) {
         // Guard: don't open modal without valid repo data
         if (!repo || !repo.owner || !repo.repo) {
-            console.error('Cannot open modal: invalid repo data', repo);
+            Logger.error('Cannot open modal: invalid repo data', repo);
             return;
         }
 
@@ -571,7 +571,7 @@ const App = {
                     safeUrl = Utils.escapeHtml(repo.url);
                 }
             } catch (e) {
-                console.error('Invalid URL:', repo.url);
+                Logger.error('Invalid URL:', repo.url);
             }
 
             // Render modal content with tabs
@@ -608,7 +608,7 @@ const App = {
                 });
             }
         } catch (error) {
-            console.error('Error loading modal content:', error);
+            Logger.error('Error loading modal content:', error);
             this.elements.modalBody.innerHTML = `
                 <div class="modal-header">
                     <h3>${Utils.escapeHtml(repo.owner)}/${Utils.escapeHtml(repo.repo)}</h3>
@@ -660,7 +660,7 @@ const App = {
                     safeDownloadLink = `<a href="${escapedUrl}" class="version-download" download="${escapedName}">Download</a>`;
                 }
             } catch (e) {
-                console.error('Invalid download URL:', archive.download_url);
+                Logger.error('Invalid download URL:', archive.download_url);
             }
         }
 
@@ -849,7 +849,7 @@ const App = {
             }
         } catch (error) {
             if (error.name === 'AbortError') return; // Request was cancelled
-            console.error('Failed to check status:', error);
+            Logger.error('Failed to check status:', error);
             statusContainer.className = 'repo-source-status';
             statusContainer.innerHTML = '';
         } finally {

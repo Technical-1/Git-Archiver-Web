@@ -10,7 +10,35 @@ const API = {
         // Your repository name
         GITHUB_REPO: 'Git-Archiver-Web',
         // Cloudflare Worker URL
-        WORKER_URL: 'https://git-archiver.btc-treasuries.workers.dev',
+        // Can be overridden via:
+        // - localStorage.setItem('workerUrl', 'https://your-worker.workers.dev')
+        // - URL param: ?workerUrl=https://your-worker.workers.dev
+        WORKER_URL: (function() {
+            try {
+                // Check URL parameter first (useful for testing)
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.has('workerUrl')) {
+                    const customUrl = urlParams.get('workerUrl');
+                    // Validate it's a proper HTTPS URL
+                    const parsed = new URL(customUrl);
+                    if (parsed.protocol === 'https:') {
+                        return customUrl;
+                    }
+                }
+                // Check localStorage (useful for persistent development override)
+                const storedUrl = localStorage.getItem('workerUrl');
+                if (storedUrl) {
+                    const parsed = new URL(storedUrl);
+                    if (parsed.protocol === 'https:') {
+                        return storedUrl;
+                    }
+                }
+            } catch (e) {
+                // Invalid URL or localStorage unavailable, use default
+            }
+            // Default production worker URL
+            return 'https://git-archiver.btc-treasuries.workers.dev';
+        })(),
         // GitHub API base
         GITHUB_API: 'https://api.github.com',
         // M1: Fetch timeout in milliseconds
@@ -97,13 +125,13 @@ const API = {
             }
 
             if (!this.validateIndex(index)) {
-                console.error('Index validation failed, using empty index');
+                Logger.warn('Index validation failed, using empty index');
                 return { repositories: {}, total_repos: 0, total_size_mb: 0 };
             }
 
             return index;
         } catch (error) {
-            console.error('Error fetching index:', error);
+            Logger.error('Error fetching index:', error);
             throw error;
         }
     },
@@ -146,7 +174,7 @@ const API = {
                 };
             }).filter(item => item.url);
         } catch (error) {
-            console.error('Error fetching pending requests:', error);
+            Logger.error('Error fetching pending requests:', error);
             return [];
         }
     },
@@ -193,7 +221,7 @@ const API = {
                     }))
                 }));
         } catch (error) {
-            console.error('Error fetching repo versions:', error);
+            Logger.error('Error fetching repo versions:', error);
             return [];
         }
     },
@@ -228,7 +256,7 @@ const API = {
             }
             return data.readme;
         } catch (error) {
-            console.error('Error fetching README:', error);
+            Logger.error('Error fetching README:', error);
             return null;
         }
     },
@@ -261,7 +289,7 @@ const API = {
             }
         } catch (error) {
             if (error.name === 'AbortError') throw error; // Re-throw abort errors
-            console.error('Error checking repo status:', error);
+            Logger.error('Error checking repo status:', error);
             return { online: null, status: 'error', message: 'Failed to check status' };
         }
     },
@@ -299,7 +327,7 @@ const API = {
 
             return data;
         } catch (error) {
-            console.error('Error bulk submitting URLs:', error);
+            Logger.error('Error bulk submitting URLs:', error);
             throw error;
         }
     },
@@ -337,7 +365,7 @@ const API = {
 
             return data;
         } catch (error) {
-            console.error('Error submitting URL:', error);
+            Logger.error('Error submitting URL:', error);
             throw error;
         }
     },
@@ -379,7 +407,7 @@ const API = {
                 private: data.private
             };
         } catch (error) {
-            console.error('Error checking repository:', error);
+            Logger.error('Error checking repository:', error);
             return null;
         }
     },

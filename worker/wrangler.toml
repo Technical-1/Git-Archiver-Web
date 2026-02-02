@@ -22,4 +22,20 @@ id = "2c10cf8e59ca4d4bbe141128201f1a5c"
 
 [vars]
 # Public variables (non-secret)
+#
+# CORS Configuration:
+# ALLOWED_ORIGIN = "*" is intentionally set to allow cross-origin requests from any domain.
+# This is a PUBLIC API designed to be embedded and used by:
+# - The official frontend hosted on GitHub Pages
+# - Third-party tools and integrations
+# - Browser extensions and scripts
+#
+# Security considerations:
+# - The API is read-heavy (index, readme, status) with aggressive caching
+# - Write operations (submit, bulk-submit) are protected by rate limiting per IP
+# - No authentication or session cookies are used (stateless)
+# - All sensitive operations validate input server-side
+#
+# If you fork this project for private use, consider restricting to your domain:
+# ALLOWED_ORIGIN = "https://yourdomain.com"
 ALLOWED_ORIGIN = "*"

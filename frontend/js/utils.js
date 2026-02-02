@@ -2,6 +2,82 @@
  * Utility functions for Git-Archiver Web
  */
 
+/**
+ * Production-safe logger that can be toggled via localStorage or URL parameter
+ *
+ * Enable logging:
+ * - Set localStorage.setItem('debug', 'true') in browser console
+ * - Or add ?debug=true to the URL
+ *
+ * Disable logging:
+ * - Set localStorage.setItem('debug', 'false')
+ * - Or remove the debug parameter from URL
+ */
+const Logger = {
+    // Check if debug mode is enabled (via localStorage or URL param)
+    isEnabled: (function() {
+        try {
+            // Check URL parameter first (takes precedence)
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.has('debug')) {
+                return urlParams.get('debug') === 'true';
+            }
+            // Fall back to localStorage
+            return localStorage.getItem('debug') === 'true';
+        } catch (e) {
+            // localStorage may be unavailable (private browsing, etc.)
+            return false;
+        }
+    })(),
+
+    log(...args) {
+        if (this.isEnabled) {
+            console.log('[Git-Archiver]', ...args);
+        }
+    },
+
+    warn(...args) {
+        if (this.isEnabled) {
+            console.warn('[Git-Archiver]', ...args);
+        }
+    },
+
+    error(...args) {
+        // Errors are always logged (important for debugging production issues)
+        console.error('[Git-Archiver]', ...args);
+    },
+
+    info(...args) {
+        if (this.isEnabled) {
+            console.info('[Git-Archiver]', ...args);
+        }
+    },
+
+    debug(...args) {
+        if (this.isEnabled) {
+            console.debug('[Git-Archiver]', ...args);
+        }
+    },
+
+    // Enable debug mode programmatically
+    enable() {
+        this.isEnabled = true;
+        try {
+            localStorage.setItem('debug', 'true');
+        } catch (e) { /* ignore */ }
+        this.log('Debug logging enabled');
+    },
+
+    // Disable debug mode programmatically
+    disable() {
+        this.log('Debug logging disabled');
+        this.isEnabled = false;
+        try {
+            localStorage.setItem('debug', 'false');
+        } catch (e) { /* ignore */ }
+    }
+};
+
 const Utils = {
     /**
      * Validate a GitHub repository URL
@@ -185,7 +261,7 @@ const Utils = {
         try {
             // Check if marked and DOMPurify are available
             if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
-                console.warn('marked.js or DOMPurify not loaded, falling back to escaped text');
+                Logger.warn('marked.js or DOMPurify not loaded, falling back to escaped text');
                 return '<pre>' + this.escapeHtml(markdown) + '</pre>';
             }
 
@@ -286,7 +362,7 @@ const Utils = {
 
             return cleanHtml;
         } catch (error) {
-            console.error('Error rendering markdown:', error);
+            Logger.error('Error rendering markdown:', error);
             return '<pre>' + this.escapeHtml(markdown) + '</pre>';
         }
     }
