@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>How It Works - Git-Archiver</title>
+    <meta name="description" content="Learn how Git-Archiver preserves GitHub repositories using Cloudflare Workers and GitHub infrastructure.">
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+</head>
+<body>
+    <div class="container about-page">
+        <!-- Navigation -->
+        <nav class="nav">
+            <a href="index.html" class="nav-brand">
+                <div class="nav-logo">📦</div>
+                <span class="nav-title">Git-Archiver</span>
+            </a>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link">Archive</a>
+                <a href="about.html" class="nav-link active">How It Works</a>
+                <a href="https://github.com/Technical-1/Git-Archiver-Web" target="_blank" class="nav-link">GitHub</a>
+            </div>
+        </nav>
+
+        <!-- Hero -->
+        <section class="about-hero">
+            <h1>How <span style="color: var(--accent-primary);">Git-Archiver</span> Works</h1>
+            <p>A serverless architecture for preserving open source software forever, powered by Cloudflare Workers and GitHub infrastructure.</p>
+        </section>
+
+        <!-- Quick Overview -->
+        <section class="about-section">
+            <h2>Overview</h2>
+            <div class="about-card">
+                <p>Git-Archiver is a free service that creates permanent archives of public GitHub repositories. When a repository gets deleted, goes private, or becomes unavailable, your archived copy remains accessible through GitHub Releases.</p>
+                <br>
+                <p>The entire system is <strong>serverless</strong>, <strong>free to operate</strong>, and <strong>open source</strong>. It uses existing GitHub infrastructure to store archives with no additional hosting costs.</p>
+            </div>
+        </section>
+
+        <!-- System Architecture -->
+        <section class="about-section">
+            <h2>System Architecture</h2>
+            <div class="diagram-container">
+                <pre class="mermaid">
+flowchart TB
+    subgraph User["🌐 User Interface"]
+        A[Web Browser]
+    end
+
+    subgraph Edge["⚡ Edge Layer"]
+        B[Cloudflare Worker<br/>API Gateway]
+        C[(KV Store<br/>Rate Limits)]
+    end
+
+    subgraph GitHub["🐙 GitHub Infrastructure"]
+        D[GitHub Issues<br/>Job Queue]
+        E[GitHub Actions<br/>Workflow Runner]
+        F[GitHub Releases<br/>Archive Storage]
+        G[index.json<br/>Repository Index]
+    end
+
+    A -->|1. Submit URL| B
+    B -->|2. Rate Check| C
+    B -->|3. Create Issue| D
+    D -->|4. Trigger| E
+    E -->|5. Clone & Archive| F
+    E -->|6. Update| G
+    A -->|7. Browse/Download| B
+    B -->|8. Fetch Index| G
+    B -->|9. Proxy Downloads| F
+
+    style A fill:#1a1e2a,stroke:#00d4ff,color:#f1f5f9
+    style B fill:#12151e,stroke:#00d4ff,color:#00d4ff
+    style C fill:#12151e,stroke:#7c3aed,color:#7c3aed
+    style D fill:#12151e,stroke:#f59e0b,color:#f59e0b
+    style E fill:#12151e,stroke:#10b981,color:#10b981
+    style F fill:#12151e,stroke:#00d4ff,color:#00d4ff
+    style G fill:#12151e,stroke:#00d4ff,color:#00d4ff
+                </pre>
+            </div>
+        </section>
+
+        <!-- Request Flow -->
+        <section class="about-section">
+            <h2>Archive Request Flow</h2>
+            <div class="diagram-container">
+                <pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant W as Cloudflare Worker
+    participant KV as KV Store
+    participant GH as GitHub API
+    participant A as GitHub Actions
+    participant R as GitHub Releases
+
+    U->>W: POST /submit {url}
+    W->>KV: Check rate limit
+    KV-->>W: OK (remaining: 9)
+    W->>GH: Validate repo exists
+    GH-->>W: 200 OK (public, 50MB)
+    W->>GH: Check pending issues
+    GH-->>W: No duplicates
+    W->>GH: Create issue with label
+    GH-->>W: Issue #123 created
+    W-->>U: 201 Created {issue_url}
+
+    Note over GH,A: Webhook triggers workflow
+
+    A->>GH: Clone repository
+    A->>A: Create .tar.gz archive
+    A->>R: Upload to release
+    A->>R: Update index.json
+    A->>GH: Close issue #123
+                </pre>
+            </div>
+            <div class="about-card">
+                <h3>Step-by-Step Process</h3>
+                <ul>
+                    <li><strong>Validation</strong> - The worker validates the GitHub URL format and checks if the repository exists and is public</li>
+                    <li><strong>Rate Limiting</strong> - Cloudflare KV tracks requests per IP to prevent abuse (10 requests/hour)</li>
+                    <li><strong>Deduplication</strong> - Checks for existing pending requests and archives created today</li>
+                    <li><strong>Issue Creation</strong> - Creates a GitHub issue with the <code>archive-request</code> label</li>
+                    <li><strong>Workflow Trigger</strong> - GitHub Actions workflow automatically triggers on new issues</li>
+                    <li><strong>Archiving</strong> - The workflow clones the repo, creates a tarball, and uploads to GitHub Releases</li>
+                    <li><strong>Index Update</strong> - A central index.json file tracks all archived repositories</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Data Flow -->
+        <section class="about-section">
+            <h2>Data Storage Architecture</h2>
+            <div class="diagram-container">
+                <pre class="mermaid">
+flowchart LR
+    subgraph Releases["GitHub Releases"]
+        direction TB
+        I[("📋 index<br/>index.json")]
+        R1["📦 owner__repo__2024-01-15<br/>archive.tar.gz + README.md"]
+        R2["📦 facebook__react__2024-01-14<br/>archive.tar.gz + README.md"]
+        R3["📦 torvalds__linux__2024-01-10<br/>archive.tar.gz + README.md"]
+    end
+
+    subgraph Index["index.json Structure"]
+        direction TB
+        J["{ repositories: {<br/>  'owner/repo': {<br/>    versions: [...],<br/>    latest_tag: '...',<br/>    total_size: 123456<br/>  }<br/>}}"]
+    end
+
+    I --> J
+
+    style I fill:#12151e,stroke:#00d4ff,color:#00d4ff
+    style R1 fill:#12151e,stroke:#7c3aed,color:#f1f5f9
+    style R2 fill:#12151e,stroke:#7c3aed,color:#f1f5f9
+    style R3 fill:#12151e,stroke:#7c3aed,color:#f1f5f9
+    style J fill:#1a1e2a,stroke:#00d4ff,color:#94a3b8
+                </pre>
+            </div>
+            <div class="about-card">
+                <h3>Storage Details</h3>
+                <ul>
+                    <li><strong>Tag Format</strong> - Each archive uses the format <code>owner__repo__YYYY-MM-DD</code></li>
+                    <li><strong>Archive Contents</strong> - Each release contains a <code>.tar.gz</code> of the repository and the original <code>README.md</code></li>
+                    <li><strong>Version History</strong> - Multiple versions can exist for the same repository (archived on different dates)</li>
+                    <li><strong>Size Limits</strong> - Maximum repository size is 2GB (GitHub Release asset limit)</li>
+                    <li><strong>Index Backup</strong> - The index is backed up before updates to prevent data loss</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- Tech Stack -->
+        <section class="about-section">
+            <h2>Technology Stack</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Cloudflare Workers</h3>
+                    <p>Serverless JavaScript runtime at the edge. Handles API requests, CORS, rate limiting, and response caching with global distribution.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🗄️</div>
+                    <h3>Cloudflare KV</h3>
+                    <p>Global key-value storage for distributed rate limiting. Provides consistent state across all edge locations.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>GitHub Actions</h3>
+                    <p>CI/CD platform that runs the archiving workflow. Triggered by issues with automatic retry and error handling.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📦</div>
+                    <h3>GitHub Releases</h3>
+                    <p>Permanent storage for archived repositories. Supports files up to 2GB with unlimited total storage.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎫</div>
+                    <h3>GitHub Issues</h3>
+                    <p>Used as a job queue for archive requests. Provides transparency and allows users to track their requests.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Static Frontend</h3>
+                    <p>Vanilla HTML, CSS, and JavaScript. No build step required. Hosted on any static hosting platform.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- API Endpoints -->
+        <section class="about-section">
+            <h2>API Reference</h2>
+            <div class="about-card">
+                <h3>Endpoints</h3>
+                <div class="api-endpoint">
+                    <code class="mono">POST /submit</code>
+                    <p>Submit a single repository for archiving. Body: <code>{"url": "https://github.com/owner/repo"}</code></p>
+                </div>
+                <div class="api-endpoint">
+                    <code class="mono">POST /bulk-submit</code>
+                    <p>Submit up to 20 repositories at once. Body: <code>{"urls": ["...", "..."]}</code></p>
+                </div>
+                <div class="api-endpoint">
+                    <code class="mono">GET /index</code>
+                    <p>Fetch the master index of all archived repositories. Cached for 5 minutes.</p>
+                </div>
+                <div class="api-endpoint">
+                    <code class="mono">GET /readme?owner=X&repo=Y</code>
+                    <p>Fetch the README for an archived repository. Cached for 1 hour.</p>
+                </div>
+                <div class="api-endpoint">
+                    <code class="mono">GET /status?owner=X&repo=Y</code>
+                    <p>Check if the original repository is still online. Cached for 1 minute.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Rate Limits -->
+        <section class="about-section">
+            <h2>Rate Limits</h2>
+            <div class="about-card">
+                <p>To prevent abuse and ensure fair usage, the following rate limits apply:</p>
+                <ul>
+                    <li><strong>Submit:</strong> 10 requests per hour per IP</li>
+                    <li><strong>Bulk Submit:</strong> 3 requests per hour per IP</li>
+                    <li><strong>Index:</strong> 60 requests per minute per IP</li>
+                    <li><strong>Status/README:</strong> 30 requests per minute per IP</li>
+                </ul>
+                <p style="margin-top: var(--space-md); color: var(--text-dim);">Rate limit headers (<code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Reset</code>) are included in all API responses.</p>
+            </div>
+        </section>
+
+        <!-- Why Archive -->
+        <section class="about-section">
+            <h2>Why Archive Repositories?</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🛡️</div>
+                    <h3>Protection Against Deletion</h3>
+                    <p>Developers sometimes delete repositories. Your archive ensures critical dependencies remain accessible.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>Private Transitions</h3>
+                    <p>Public repos can go private. Keep a snapshot of code that was once freely available.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">⚖️</div>
+                    <h3>DMCA Takedowns</h3>
+                    <p>Sometimes repositories face legal challenges. Archives preserve historical record.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📜</div>
+                    <h3>Historical Research</h3>
+                    <p>Study how projects evolved. Multiple dated archives let you track changes over time.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Open Source -->
+        <section class="about-section">
+            <h2>Open Source</h2>
+            <div class="about-card">
+                <p>Git-Archiver is completely open source. You can:</p>
+                <ul>
+                    <li>View the complete source code on <a href="https://github.com/Technical-1/Git-Archiver-Web" target="_blank">GitHub</a></li>
+                    <li>Deploy your own instance using the provided documentation</li>
+                    <li>Contribute improvements via pull requests</li>
+                    <li>Report issues or request features</li>
+                </ul>
+                <div class="tech-stack" style="margin-top: var(--space-lg);">
+                    <span class="tech-badge">MIT License</span>
+                    <span class="tech-badge">Cloudflare Workers</span>
+                    <span class="tech-badge">GitHub Actions</span>
+                    <span class="tech-badge">Vanilla JS</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-links">
+                <a href="https://github.com/Technical-1/Git-Archiver-Web" target="_blank">GitHub</a>
+                <span>&middot;</span>
+                <span>No sign-up required</span>
+                <span>&middot;</span>
+                <span>100% Free</span>
+            </div>
+            <p class="footer-note">
+                Archives are stored in GitHub Releases. Max repository size: 2GB.
+            </p>
+            <a href="https://jacobkanfer.com" target="_blank" rel="noopener" class="footer-credit">
+                <img src="assets/jk-logo.svg" alt="JK" width="28" height="28">
+                <span>Built by Jacob Kanfer</span>
+            </a>
+        </footer>
+    </div>
+
+    <!-- Mermaid.js -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script>
+        // Initialize Mermaid with dark theme
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                darkMode: true,
+                background: '#08090d',
+                primaryColor: '#1a1e2a',
+                primaryTextColor: '#f1f5f9',
+                primaryBorderColor: '#00d4ff',
+                lineColor: '#00d4ff',
+                secondaryColor: '#12151e',
+                tertiaryColor: '#252a3a',
+                fontFamily: 'JetBrains Mono, monospace',
+                fontSize: '14px',
+                nodeBorder: '#00d4ff',
+                clusterBkg: '#0c0e14',
+                clusterBorder: '#252a3a',
+                edgeLabelBackground: '#12151e',
+                nodeTextColor: '#f1f5f9'
+            },
+            flowchart: {
+                htmlLabels: true,
+                curve: 'basis',
+                padding: 15
+            },
+            sequence: {
+                actorMargin: 50,
+                boxMargin: 10,
+                boxTextMargin: 5,
+                noteMargin: 10,
+                messageMargin: 35,
+                mirrorActors: false,
+                useMaxWidth: true
+            }
+        });
+    </script>
+</body>
+</html>

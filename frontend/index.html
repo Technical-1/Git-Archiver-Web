@@ -10,14 +10,28 @@
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="logo">
-                <span class="logo-icon">📦</span>
-                <h1>Git-Archiver</h1>
+        <!-- Navigation -->
+        <nav class="nav">
+            <a href="index.html" class="nav-brand">
+                <div class="nav-logo">📦</div>
+                <span class="nav-title">Git-Archiver</span>
+            </a>
+            <div class="nav-links">
+                <a href="index.html" class="nav-link active">Archive</a>
+                <a href="about.html" class="nav-link">How It Works</a>
+                <a href="https://github.com/Technical-1/Git-Archiver-Web" target="_blank" class="nav-link">GitHub</a>
             </div>
-            <p class="tagline">Free GitHub Repository Archive Service</p>
-        </header>
+        </nav>
+
+        <!-- Hero -->
+        <section class="hero">
+            <div class="hero-badge">
+                <span class="hero-badge-dot"></span>
+                <span>Free & Open Source</span>
+            </div>
+            <h1 class="hero-title">Preserve <span>Open Source</span><br>Forever</h1>
+            <p class="hero-subtitle">Archive any public GitHub repository. No sign-up required. Your archives are stored permanently in GitHub Releases.</p>
+        </section>
 
         <!-- Submit Section -->
         <section class="submit-section">
@@ -118,13 +132,13 @@
 
         <!-- Footer -->
         <footer class="footer">
-            <p>
+            <div class="footer-links">
                 <a href="https://github.com/Technical-1/Git-Archiver-Web" target="_blank">GitHub</a>
-                &middot;
+                <span>&middot;</span>
                 <span>No sign-up required</span>
-                &middot;
+                <span>&middot;</span>
                 <span>100% Free</span>
-            </p>
+            </div>
             <p class="footer-note">
                 Archives are stored in GitHub Releases. Max repository size: 2GB.
             </p>
