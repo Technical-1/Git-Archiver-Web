@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    /* OG Image: 1200x630 standard size */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Outfit:wght@400;600;800&display=swap');
+
+    .og-card {
+      width: 1200px;
+      height: 630px;
+      background: #08090d;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px;
+    }
+
+    /* Grid pattern overlay */
+    .grid-pattern {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-image:
+        linear-gradient(rgba(0, 212, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 212, 255, 0.04) 1px, transparent 1px);
+      background-size: 50px 50px;
+      mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 70%);
+      -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 70%);
+    }
+
+    /* Noise texture */
+    .noise {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    }
+
+    /* Radial glow behind icon */
+    .glow-top {
+      position: absolute;
+      top: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 500px;
+      height: 300px;
+      background: radial-gradient(ellipse, rgba(0, 212, 255, 0.15) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    /* Secondary glow - bottom corner */
+    .glow-bottom {
+      position: absolute;
+      bottom: -100px;
+      right: -100px;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(124, 58, 237, 0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .content {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+
+    /* Package icon container */
+    .icon-container {
+      width: 100px;
+      height: 100px;
+      background: linear-gradient(135deg, #00d4ff, #7c3aed);
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 32px;
+      box-shadow: 0 0 60px rgba(0, 212, 255, 0.3);
+    }
+
+    .icon-container span {
+      font-size: 56px;
+      line-height: 1;
+    }
+
+    /* Main headline */
+    .headline {
+      font-family: 'Outfit', sans-serif;
+      font-size: 72px;
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 8px;
+    }
+
+    .headline .white {
+      color: #f1f5f9;
+    }
+
+    .headline .cyan {
+      color: #00d4ff;
+    }
+
+    /* Accent underline */
+    .accent-line {
+      width: 200px;
+      height: 4px;
+      background: linear-gradient(90deg, #00d4ff, #7c3aed);
+      border-radius: 2px;
+      margin: 16px 0 24px;
+    }
+
+    /* Subtitle */
+    .subtitle {
+      font-family: 'Outfit', sans-serif;
+      font-size: 32px;
+      font-weight: 600;
+      color: #94a3b8;
+      margin-bottom: 40px;
+    }
+
+    /* Feature tags */
+    .tags {
+      display: flex;
+      gap: 16px;
+    }
+
+    .tag {
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      font-weight: 500;
+      padding: 10px 20px;
+      border-radius: 100px;
+      background: rgba(0, 212, 255, 0.1);
+      color: #00d4ff;
+      border: 1px solid rgba(0, 212, 255, 0.25);
+    }
+
+    .tag.secondary {
+      background: rgba(124, 58, 237, 0.1);
+      color: #a78bfa;
+      border-color: rgba(124, 58, 237, 0.25);
+    }
+
+    /* URL at bottom */
+    .url {
+      position: absolute;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 18px;
+      font-weight: 500;
+      color: #64748b;
+      letter-spacing: 0.02em;
+    }
+
+    /* Border accent at top */
+    .top-border {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 400px;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, #00d4ff, #7c3aed, transparent);
+    }
+  </style>
+</head>
+<body>
+  <div class="og-card">
+    <div class="grid-pattern"></div>
+    <div class="noise"></div>
+    <div class="glow-top"></div>
+    <div class="glow-bottom"></div>
+    <div class="top-border"></div>
+
+    <div class="content">
+      <div class="icon-container">
+        <span>&#x1F4E6;</span>
+      </div>
+
+      <h1 class="headline">
+        <span class="white">Preserve </span><span class="cyan">Open Source</span><br>
+        <span class="white">Forever</span>
+      </h1>
+
+      <div class="accent-line"></div>
+
+      <p class="subtitle">Git-Archiver</p>
+
+      <div class="tags">
+        <span class="tag">Free & Open Source</span>
+        <span class="tag secondary">No Sign-up Required</span>
+        <span class="tag">Permanent Storage</span>
+      </div>
+    </div>
+
+    <span class="url">technical-1.github.io/Git-Archiver-Web</span>
+  </div>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: transparent;
+    }
+
+    /* 512x512 master size - will be scaled down */
+    .favicon {
+      width: 512px;
+      height: 512px;
+      background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 100%);
+      border-radius: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .favicon span {
+      font-size: 280px;
+      line-height: 1;
+      filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.3));
+    }
+  </style>
+</head>
+<body>
+  <div class="favicon">
+    <span>&#x1F4E6;</span>
+  </div>
+</body>
+</html>
