@@ -539,14 +539,77 @@ jobs:
 
       - name: Upload index
         if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: index
-          name: "Repository Index"
-          body: "Master index of all archived repositories. Auto-updated."
-          files: index.json
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Ensure the index release exists
+          if ! gh release view index >/dev/null 2>&1; then
+            echo "Creating index release..."
+            gh release create index --title "Repository Index" \
+              --notes "Master index of all archived repositories. Auto-updated."
+          fi
+
+          # Upload with retry loop (3 attempts, exponential backoff)
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          DELAY=5
+          UPLOAD_OK=false
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Upload attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if gh release upload index index.json --clobber; then
+              echo "Upload succeeded on attempt $ATTEMPT"
+
+              # Post-upload verification: download and compare key fields
+              sleep 2
+              VERIFY_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
+              if curl -sL -o verify_index.json "$VERIFY_URL" && [ -s verify_index.json ]; then
+                UPLOADED_REPOS=$(jq -r '.total_repos' verify_index.json 2>/dev/null)
+                UPLOADED_DATE=$(jq -r '.last_updated' verify_index.json 2>/dev/null)
+                LOCAL_REPOS=$(jq -r '.total_repos' index.json)
+                LOCAL_DATE=$(jq -r '.last_updated' index.json)
+
+                if [ "$UPLOADED_REPOS" = "$LOCAL_REPOS" ] && [ "$UPLOADED_DATE" = "$LOCAL_DATE" ]; then
+                  echo "Verification passed: total_repos=$UPLOADED_REPOS, last_updated=$UPLOADED_DATE"
+                  UPLOAD_OK=true
+                  rm -f verify_index.json
+                  break
+                else
+                  echo "WARNING: Verification mismatch (uploaded: repos=$UPLOADED_REPOS date=$UPLOADED_DATE, local: repos=$LOCAL_REPOS date=$LOCAL_DATE)"
+                fi
+                rm -f verify_index.json
+              else
+                echo "WARNING: Could not download index for verification (may be CDN cache delay)"
+                # Trust the upload if gh command succeeded
+                UPLOAD_OK=true
+                break
+              fi
+            else
+              echo "Upload failed on attempt $ATTEMPT"
+            fi
+
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "Retrying in ${DELAY}s..."
+              sleep $DELAY
+              DELAY=$((DELAY * 2))
+            fi
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$UPLOAD_OK" != "true" ]; then
+            echo "ERROR: All upload attempts failed"
+
+            # Fallback: restore from backup if available
+            if [ -f existing_index.json ] && jq -e '.' existing_index.json >/dev/null 2>&1; then
+              echo "Restoring index from pre-update backup..."
+              gh release upload index existing_index.json --clobber && \
+                echo "Backup index restored successfully" || \
+                echo "WARNING: Backup restore also failed"
+            fi
+
+            exit 1
+          fi
 
       - name: Comment on issue (success - new archive)
         if: github.event_name == 'issues' && steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
@@ -635,6 +698,38 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: message
+            });
+
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              labels: ['archive-request', 'failed']
+            });
+
+      - name: Comment on issue (unexpected failure)
+        if: failure() && github.event_name == 'issues' && steps.parse.outputs.valid == 'true' && steps.validate.outputs.valid == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = '${{ steps.parse.outputs.owner }}';
+            const repo = '${{ steps.parse.outputs.repo }}';
+            const runUrl = `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ **Archive failed unexpectedly**
+
+            **Repository:** ${owner}/${repo}
+
+            An error occurred during the clone, archive, or upload phase.
+
+            **Workflow run:** [View logs](${runUrl})
+
+            This issue will be closed. Please open a new issue to retry.`
             });
 
             await github.rest.issues.update({
