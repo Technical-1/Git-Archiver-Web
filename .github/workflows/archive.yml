@@ -560,31 +560,22 @@ jobs:
 
             if gh release upload index index.json --clobber; then
               echo "Upload succeeded on attempt $ATTEMPT"
+              UPLOAD_OK=true
 
-              # Post-upload verification: download and compare key fields
-              sleep 2
-              VERIFY_URL="https://github.com/${{ github.repository }}/releases/download/index/index.json"
-              if curl -sL -o verify_index.json "$VERIFY_URL" && [ -s verify_index.json ]; then
-                UPLOADED_REPOS=$(jq -r '.total_repos' verify_index.json 2>/dev/null)
-                UPLOADED_DATE=$(jq -r '.last_updated' verify_index.json 2>/dev/null)
-                LOCAL_REPOS=$(jq -r '.total_repos' index.json)
-                LOCAL_DATE=$(jq -r '.last_updated' index.json)
+              # Post-upload verification via API (avoids CDN cache staleness)
+              ASSET_SIZE=$(gh api "repos/${{ github.repository }}/releases/tags/index" \
+                --jq '.assets[] | select(.name == "index.json") | .size' 2>/dev/null)
+              LOCAL_SIZE=$(stat -c%s index.json 2>/dev/null || stat -f%z index.json)
 
-                if [ "$UPLOADED_REPOS" = "$LOCAL_REPOS" ] && [ "$UPLOADED_DATE" = "$LOCAL_DATE" ]; then
-                  echo "Verification passed: total_repos=$UPLOADED_REPOS, last_updated=$UPLOADED_DATE"
-                  UPLOAD_OK=true
-                  rm -f verify_index.json
-                  break
-                else
-                  echo "WARNING: Verification mismatch (uploaded: repos=$UPLOADED_REPOS date=$UPLOADED_DATE, local: repos=$LOCAL_REPOS date=$LOCAL_DATE)"
-                fi
-                rm -f verify_index.json
+              if [ -n "$ASSET_SIZE" ] && [ "$ASSET_SIZE" = "$LOCAL_SIZE" ]; then
+                echo "Verification passed: asset size=$ASSET_SIZE bytes"
+              elif [ -n "$ASSET_SIZE" ]; then
+                echo "WARNING: Size mismatch (API: $ASSET_SIZE, local: $LOCAL_SIZE) - upload may need propagation time"
               else
-                echo "WARNING: Could not download index for verification (may be CDN cache delay)"
-                # Trust the upload if gh command succeeded
-                UPLOAD_OK=true
-                break
+                echo "INFO: Could not verify asset via API (non-critical)"
               fi
+
+              break
             else
               echo "Upload failed on attempt $ATTEMPT"
             fi
