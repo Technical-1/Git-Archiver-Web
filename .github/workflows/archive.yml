@@ -286,18 +286,22 @@ jobs:
       - name: Check for changes from previous archive
         if: steps.validate.outputs.valid == 'true'
         id: check_changes
+        env:
+          OWNER: ${{ steps.parse.outputs.owner }}
+          REPO: ${{ steps.parse.outputs.repo }}
+          NEW_COMMIT: ${{ steps.clone.outputs.commit_hash }}
+          NEW_ARCHIVE_HASH: ${{ steps.archive.outputs.archive_hash }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          OWNER="${{ steps.parse.outputs.owner }}"
-          REPO="${{ steps.parse.outputs.repo }}"
-          NEW_HASH="${{ steps.archive.outputs.archive_hash }}"
-
-          echo "New archive hash: $NEW_HASH"
+          echo "New commit:       $NEW_COMMIT"
+          echo "New archive hash: $NEW_ARCHIVE_HASH"
 
           # Get all releases for this repo
           RELEASES=$(curl -s \
             -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases?per_page=100")
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$GH_REPOSITORY/releases?per_page=100")
 
           # Find the most recent release for this owner/repo
           PREV_TAG=$(echo "$RELEASES" | jq -r --arg prefix "${OWNER}__${REPO}__" '
@@ -312,25 +316,43 @@ jobs:
 
           echo "Previous release tag: $PREV_TAG"
 
-          # Get previous metadata to compare hash
-          PREV_METADATA_URL="https://github.com/${{ github.repository }}/releases/download/$PREV_TAG/metadata.json"
-          PREV_HASH=$(curl -sL "$PREV_METADATA_URL" | jq -r '.archive_hash // empty')
+          # Read previous metadata.json once so we can compare commit_hash
+          # (the source-of-truth signal) and fall back to archive_hash for
+          # legacy releases created before commit_hash was persisted.
+          PREV_METADATA_URL="https://github.com/$GH_REPOSITORY/releases/download/$PREV_TAG/metadata.json"
+          PREV_METADATA=$(curl -sL "$PREV_METADATA_URL")
+          PREV_COMMIT=$(echo "$PREV_METADATA" | jq -r '.commit_hash // empty')
+          PREV_ARCHIVE_HASH=$(echo "$PREV_METADATA" | jq -r '.archive_hash // empty')
 
-          if [ -z "$PREV_HASH" ]; then
+          # Prefer commit_hash: it changes iff source changed. archive_hash
+          # is non-deterministic across runs (gzip mtime + .git/ contents),
+          # which is why the old comparison created a release every cron tick.
+          if [ -n "$PREV_COMMIT" ] && [ -n "$NEW_COMMIT" ]; then
+            echo "Previous commit:  $PREV_COMMIT"
+            if [ "$NEW_COMMIT" == "$PREV_COMMIT" ]; then
+              echo "Commit unchanged - skipping release"
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+            else
+              echo "Commit changed - will create new release"
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+            fi
+            exit 0
+          fi
+
+          # Legacy fallback: previous release pre-dates commit_hash persistence.
+          # archive_hash is not reliable for change detection, so on first
+          # encounter we treat this as "changed" to force one fresh release
+          # whose metadata will include commit_hash; subsequent runs use the
+          # commit_hash path above.
+          if [ -z "$PREV_ARCHIVE_HASH" ]; then
             echo "No previous hash found - will create new release"
             echo "has_changes=true" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Previous archive hash: $PREV_HASH"
-
-          if [ "$NEW_HASH" == "$PREV_HASH" ]; then
-            echo "Archive hash unchanged - skipping release"
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "Archive hash changed - will create new release"
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-          fi
+          echo "Previous archive hash: $PREV_ARCHIVE_HASH (legacy, no commit_hash)"
+          echo "Forcing new release to record commit_hash going forward"
+          echo "has_changes=true" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: steps.validate.outputs.valid == 'true' && steps.check_changes.outputs.has_changes == 'true'
