@@ -1,235 +1,118 @@
 # Tech Stack
 
-## Overview
+## Core Technologies
 
-I built Git-Archiver Web as a fully serverless application using only free-tier services. The stack prioritizes simplicity, zero operational cost, and minimal dependencies.
+| Category | Technology | Version | Why this choice |
+|----------|------------|---------|-----------------|
+| Frontend language | JavaScript (ES2020+) | — | No build step, no transpile pipeline, works in every modern browser |
+| Frontend markup/style | HTML5 + CSS3 (custom, no framework) | — | The UI is small; a framework would be heavier than the app |
+| Edge runtime | Cloudflare Workers (V8) | — | Free tier covers traffic, sub-5ms cold starts, built-in secrets |
+| Worker tooling | Wrangler | ^3.0.0 | Cloudflare's official CLI; only worker dev dependency |
+| CI/CD + compute | GitHub Actions | — | Unlimited minutes on public repos; native triggers from Issues |
+| Storage | GitHub Releases | — | Free, CDN-backed, supports per-archive versioning |
 
 ## Frontend
 
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| HTML5 | - | Semantic markup |
-| CSS3 | - | Custom styling with CSS variables |
-| JavaScript | ES2020+ | Application logic |
+- **Framework**: none — plain HTML + a few vanilla-JS modules
+- **State management**: a single in-memory store inside `app.js`
+- **Styling**: handwritten CSS with custom properties for theming; dark theme by default; mobile-first breakpoints
+- **Build tool**: none — files are served as-is from `frontend/` by GitHub Pages
 
-### Frontend Details
+### Frontend modules
 
-**No Framework**: I intentionally avoided React, Vue, or other frameworks. The entire frontend is ~40KB uncompressed, with no build step required.
-
-**Styling Approach**:
-- Custom CSS with CSS variables for theming
-- Dark theme by default (GitHub-inspired color palette)
-- Fully responsive design with mobile-first breakpoints
-- No CSS frameworks (no Tailwind, Bootstrap)
-
-**JavaScript Architecture**:
-- **app.js** (24KB): Main application with state management, event handling, and rendering
-- **api.js** (8KB): API client with all HTTP requests abstracted
-- **utils.js** (6KB): Pure utility functions (formatting, validation, DOM helpers)
-
-### Why Vanilla JS?
-
-1. **No build step**: Just edit and deploy
-2. **Fast load times**: ~40KB total vs 100KB+ for React alone
-3. **Simplicity**: Easy to understand and modify
-4. **Browser support**: Works in all modern browsers without transpilation
+| File | Lines | Role |
+|------|-------|------|
+| `frontend/js/app.js` | ~860 | App state, event handlers, rendering of the repo grid and detail modal |
+| `frontend/js/api.js` | ~430 | Fetch wrappers around the Worker's endpoints |
+| `frontend/js/utils.js` | ~440 | Formatters, URL parsers, DOM helpers, validation |
 
 ## Backend (Cloudflare Worker)
 
-| Technology | Version | Purpose |
-|------------|---------|---------|
-| Cloudflare Workers | V8 Runtime | Serverless API |
-| Wrangler | ^3.0.0 | CLI for deployment |
+- **Runtime**: Cloudflare Workers V8 isolates
+- **Entry point**: `worker/src/index.js` (~1,200 lines)
+- **Dependencies at runtime**: none — only the Workers API and `fetch`
+- **Auth model**: Worker holds the GitHub PAT in Wrangler secrets; the frontend is unauthenticated
 
-### Worker Details
+### Worker endpoints
 
-**Runtime**: Cloudflare Workers run on the V8 engine (same as Chrome/Node.js), providing excellent performance with a cold start under 5ms.
-
-**Code Size**: ~700 lines of JavaScript handling:
-- URL validation and routing
-- GitHub API integration
-- CORS handling
-- Rate limiting (prepared for KV)
-
-**Endpoints**:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/submit` | POST | Submit single repo URL |
-| `/bulk-submit` | POST | Submit up to 20 URLs |
-| `/index` | GET | Fetch master index (proxied) |
-| `/readme` | GET | Fetch archived README |
-| `/status` | GET | Check if original repo exists |
+| `/submit` | POST | Submit a single repo URL |
+| `/bulk-submit` | POST | Submit up to 20 URLs at once |
+| `/index` | GET | Proxy fetch of the master `index.json` |
+| `/readme` | GET | Proxy fetch of an archived README |
+| `/status` | GET | Check whether the original repo is still public |
 | `/health` | GET | Health check |
-
-### Why Cloudflare Workers?
-
-1. **Free tier**: 100,000 requests/day
-2. **Global edge**: Low latency worldwide
-3. **No cold starts**: Instant response times
-4. **Built-in secrets**: Secure token storage
 
 ## Processing (GitHub Actions)
 
-| Component | Purpose |
-|-----------|---------|
-| archive.yml | Main archive workflow |
-| update-archives.yml | Daily re-archive job |
-| pages.yml | Frontend deployment |
+| Workflow | Trigger | Role |
+|----------|---------|------|
+| `archive.yml` | `issues.opened` with label `archive-request` | Clone, hash, dedupe, publish release, update index |
+| `update-archives.yml` | Scheduled cron | Dispatch `archive.yml` against the oldest entries |
+| `pages.yml` | Push to `main` | Build and publish `frontend/` to GitHub Pages |
 
-### Workflow Details
+Key external Actions used:
 
-**archive.yml** (~470 lines):
-- Triggers on issue creation with `archive-request` label
-- Validates repository existence and size
-- Clones with depth 100 (balances speed vs history)
-- Creates tar.gz archive
-- Calculates SHA256 for deduplication
-- Uploads to GitHub Releases
-- Updates master index
-- Comments on and closes issue
+| Action | Version | Why |
+|--------|---------|-----|
+| `actions/checkout` | v4 | Clone the archive repo for workflow context |
+| `softprops/action-gh-release` | v1 | Create releases and upload assets in one step |
+| `actions/github-script` | v7 | Issue parsing, commenting, closing |
+| `actions/configure-pages` | v4 | Pages build config |
+| `actions/upload-pages-artifact` | v3 | Stage `frontend/` for deploy |
+| `actions/deploy-pages` | v4 | Publish the Pages artifact |
 
-**update-archives.yml** (~100 lines):
-- Runs daily at 3 AM UTC
-- Selects oldest archives for re-checking
-- Triggers archive workflow via dispatch
-- Smart deduplication prevents duplicate releases
-
-### Why GitHub Actions?
-
-1. **Unlimited minutes**: Free for public repositories
-2. **Native GitHub integration**: Built-in GITHUB_TOKEN
-3. **Event-driven**: Triggers on issues without polling
-4. **Powerful runners**: 2-core machines with 7GB RAM
-
-## Storage
-
-| Service | Purpose | Limits |
-|---------|---------|--------|
-| GitHub Releases | Archive storage | 2GB per asset |
-| GitHub Pages | Frontend hosting | Unlimited bandwidth |
-
-### Storage Structure
+## Storage layout
 
 ```
 Releases/
   index (tag)
-    index.json          # Master index of all repos
-
-  owner__repo__date (tag)
-    owner_repo.tar.gz   # Archive file
-    metadata.json       # Size, hash, stars, etc.
-    README.md           # Extracted README
+    index.json            # master index of all archived repos
+  owner__repo__YYYY-MM-DD (tag)
+    owner_repo.tar.gz     # archive file
+    metadata.json         # size, sha256, stars, default branch, archive date
+    README.md             # extracted README
 ```
-
-### Why GitHub Releases?
-
-1. **Free unlimited storage**: No explicit limits for public repos
-2. **CDN-backed**: Fast global downloads
-3. **Versioning**: Natural support for multiple versions
-4. **API accessible**: Easy to query and download
 
 ## Infrastructure
 
-| Service | Tier | Cost |
-|---------|------|------|
-| GitHub | Free | $0 |
-| Cloudflare Workers | Free | $0 |
-| Domain (optional) | - | $0 (using github.io) |
+- **Hosting (frontend)**: GitHub Pages
+- **Hosting (API)**: Cloudflare Workers
+- **Compute**: GitHub Actions (`ubuntu-latest`, 2-core, 7 GB RAM)
+- **CI/CD**: GitHub Actions (`pages.yml`, plus Wrangler for the Worker)
+- **Monitoring**: none — `wrangler tail` for live Worker logs; Actions run logs for the archive workflow
 
-### Deployment
+## Development tools
 
-**Frontend**:
-- Automatic deployment via GitHub Actions on push to main
-- GitHub Pages serves from `frontend/` directory
-- No build step required
+- **Package manager**: npm (only used inside `worker/`)
+- **Linting / formatting**: none configured — the codebase is small enough to review by hand
+- **Testing**: none — primary verification is running an archive end-to-end through the workflow
 
-**Worker**:
-```bash
-cd worker
-npx wrangler deploy
-```
+## Key dependencies
 
-**Secrets**:
-- `GITHUB_TOKEN`: Personal Access Token (repo scope)
-- `GITHUB_OWNER`: Repository owner
-- `GITHUB_REPO`: Repository name
+| Package | Purpose |
+|---------|---------|
+| `wrangler` (^3.0.0) | Cloudflare Worker CLI — local dev, deploy, tail logs, secrets management |
 
-## Key Dependencies
+The Worker itself has zero runtime dependencies; it only uses the Workers runtime APIs.
 
-### Worker Dependencies
+## Secrets
 
-| Package | Version | Reason |
-|---------|---------|--------|
-| wrangler | ^3.0.0 | Cloudflare CLI for development and deployment |
+| Variable | Stored in | Description |
+|----------|-----------|-------------|
+| `GITHUB_TOKEN` | Cloudflare Worker secret | PAT with `repo` scope used by the Worker |
+| `GITHUB_OWNER` | Cloudflare Worker secret | Owner of the archive repo |
+| `GITHUB_REPO` | Cloudflare Worker secret | Name of the archive repo |
 
-I kept dependencies minimal. The worker itself uses no external packages - just vanilla JavaScript with the Workers API.
-
-### GitHub Actions
-
-| Action | Version | Reason |
-|--------|---------|--------|
-| actions/checkout | v4 | Clone repository |
-| softprops/action-gh-release | v1 | Create releases |
-| actions/github-script | v7 | Issue management |
-| actions/configure-pages | v4 | Pages deployment |
-| actions/upload-pages-artifact | v3 | Upload static files |
-| actions/deploy-pages | v4 | Deploy to Pages |
-
-## Development Setup
-
-### Prerequisites
-
-- Node.js 18+
-- Cloudflare account (free)
-- GitHub account with PAT
-
-### Local Development
-
-```bash
-# Frontend (any static server)
-cd frontend
-npx serve .
-# Opens at http://localhost:3000
-
-# Worker
-cd worker
-npm install
-npx wrangler dev
-# Opens at http://localhost:8787
-```
-
-### Environment Variables
-
-| Variable | Location | Description |
-|----------|----------|-------------|
-| GITHUB_TOKEN | Cloudflare Secrets | PAT with repo scope |
-| GITHUB_OWNER | Cloudflare Secrets | Your GitHub username |
-| GITHUB_REPO | Cloudflare Secrets | Repository name |
-
-## Performance Characteristics
+## Performance and limits
 
 | Metric | Value |
 |--------|-------|
-| Frontend load time | <1s (40KB total) |
-| Worker cold start | <5ms |
-| Archive creation | 2-10 minutes |
-| Index fetch | <100ms |
-
-## Scalability
-
-| Component | Limit | Notes |
-|-----------|-------|-------|
-| Worker requests | 100K/day | Free tier |
-| Actions minutes | Unlimited | Public repos |
-| Storage | Unlimited | GitHub may contact at scale |
-| Concurrent archives | 20 | GitHub Actions limit |
-
-## Future Stack Considerations
-
-If I needed to scale beyond free tiers:
-
-1. **Workers Paid ($5/mo)**: 10M requests, KV storage
-2. **GitHub Pro ($4/mo)**: Private repos, more Actions minutes
-3. **Custom domain**: More professional appearance
-4. **Algolia (free tier)**: Full-text search
-5. **IPFS/Pinata**: Redundant storage
+| Frontend total payload | ~40 KB |
+| Worker cold start | <5 ms |
+| Archive build time | 2–10 minutes typical |
+| `index.json` fetch | <100 ms (CDN-cached) |
+| Worker free tier | 100K requests/day |
+| Concurrent archives | Bounded by GitHub Actions concurrency (~20) |
+| Archive asset size | 2 GB hard cap (GitHub Releases) |
